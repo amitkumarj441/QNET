@@ -6,13 +6,14 @@ import qutip
 import pytest
 
 from qnet.algebra.core.operator_algebra import (
-    Create, Destroy, LocalSigma, LocalProjector, OperatorSymbol,
+    LocalSigma, LocalProjector, OperatorSymbol,
     ScalarTimesOperator, ZeroOperator)
+from qnet.algebra.library.fock_operators import Destroy, Create
+from qnet.algebra.core.hilbert_space_algebra import LocalSpace
 from qnet.algebra.core.circuit_algebra import SLH
 from qnet.algebra.core.matrix_algebra import identity_matrix, Matrix
 from qnet.convert.to_qutip import (
     _time_dependent_to_qutip, convert_to_qutip, SLH_to_qutip)
-from qnet.algebra.core.hilbert_space_algebra import LocalSpace
 
 _hs_counter = 0
 
@@ -178,7 +179,7 @@ def test_time_dependent_to_qutip():
     res = _time_dependent_to_qutip(H, time_symbol=t, convert_as='str')
     assert len(res) == 9
     terms = sorted([term for H, term in res[1:]])
-    expected = sorted([str(op.coeff) for op in H.expand().operands
+    expected = sorted([str(op.coeff.val) for op in H.expand().operands
                        if isinstance(op, ScalarTimesOperator)])
     assert terms == expected
 
@@ -209,7 +210,6 @@ def test_trivial_space_conversion():
     """
     from qnet.convert.to_qutip import convert_to_qutip, SLH_to_qutip
     from qnet.algebra.core.operator_algebra import ZeroOperator
-    from qnet.algebra.core.hilbert_space_algebra import LocalSpace
     from qnet.algebra.library.circuit_components import Beamsplitter
     from qnet.algebra.core.exceptions import AlgebraError
 
@@ -220,7 +220,7 @@ def test_trivial_space_conversion():
     O = convert_to_qutip(ZeroOperator, full_space=LocalSpace(0, dimension=10))
     assert np.linalg.norm((O.data.todense() - np.zeros((10, 10)))) == 0.0
 
-    bs = Beamsplitter("BS", theta=0)
+    bs = Beamsplitter(label="BS", mixing_angle=0)
     slh = bs.toSLH()
 
     with pytest.raises(AlgebraError) as excinfo:

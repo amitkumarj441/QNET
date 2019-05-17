@@ -1,5 +1,4 @@
-r"""
-Core class hierarchy for Hilbert spaces
+r"""Core class hierarchy for Hilbert spaces
 
 This module defines some simple classes to describe simple and
 *composite/tensor* (i.e., multiple degree of freedom)
@@ -19,7 +18,7 @@ from .abstract_algebra import (
 from .algebraic_properties import (
     assoc, idem, filter_neutral, convert_to_spaces, empty_trivial, )
 from .exceptions import AlgebraError, BasisNotSetError
-from ...utils.indices import FockIndex, SymbolicLabelBase
+from ...utils.indices import SymbolicLabelBase, FockIndex, FockLabel, StrLabel
 from ...utils.ordering import KeyTuple
 from ...utils.singleton import Singleton, singleton_object
 
@@ -36,16 +35,10 @@ __private__ = []  # anything not in __all__ must be in __private__
 
 
 class HilbertSpace(metaclass=ABCMeta):
-    """Basic Hilbert space class from which concrete classes are derived."""
+    """Base class for Hilbert spaces"""
 
     def tensor(self, *others):
-        """Tensor product between Hilbert spaces
-
-        :param others: Other Hilbert space(s)
-        :type others: HilbertSpace
-        :return: Tensor product space.
-        :rtype: HilbertSpace
-        """
+        """Tensor product between Hilbert spaces"""
         return ProductSpace.create(self, *others)
 
     @abstractmethod
@@ -74,6 +67,12 @@ class HilbertSpace(metaclass=ABCMeta):
         if other == FullSpace:
             return False
         else:
+            for ls in self.local_factors:
+                if isinstance(ls.label, StrLabel):
+                    return False
+            for ls in other.local_factors:
+                if isinstance(ls.label, StrLabel):
+                    return False
             return set(self.local_factors).isdisjoint(set(other.local_factors))
 
     def is_tensor_factor_of(self, other):
@@ -176,10 +175,11 @@ class HilbertSpace(metaclass=ABCMeta):
 
 
 class LocalSpace(HilbertSpace, Expression):
-    """A local Hilbert space, i.e., for a single degree of freedom.
+    """Hilbert space for a single degree of freedom.
 
     Args:
-        label (str or int): label (subscript) of the Hilbert space
+        label (str or int or StrLabel): label (subscript) of the
+            Hilbert space
         basis (tuple or None): Set an explicit basis for the Hilbert space
             (tuple of labels for the basis states)
         dimension (int or None): Specify the dimension $n$ of the Hilbert
@@ -194,10 +194,29 @@ class LocalSpace(HilbertSpace, Expression):
             e.g. sums or products of Operators. Hilbert spaces will be ordered
             from left to right be increasing `order_index`; Hilbert spaces
             without an explicit `order_index` are sorted by their label
+
+    A :class:`LocalSpace` fundamentally has a Fock-space like structure,
+    in that its basis states may be understood as an "excitation".
+    The spectrum can be infinite, with levels labeled by integers 0, 1, ...::
+
+        >>> hs = LocalSpace(label=0)
+
+    or truncated to a finite dimension::
+
+        >>> hs = LocalSpace(0, dimension=5)
+        >>> hs.basis_labels
+        ('0', '1', '2', '3', '4')
+
+    For finite-dimensional (truncated) Hilbert spaces, we also allow an
+    arbitrary alternative labeling of the canonical basis::
+
+        >>> hs = LocalSpace('rydberg', dimension=3, basis=('g', 'e', 'r'))
+
     """
     _rx_label = re.compile('^[A-Za-z0-9.+-]+(_[A-Za-z0-9().+-]+)?$')
 
-    _basis_label_types = (int, str, FockIndex)  # acceptable types for labels
+    _basis_label_types = (int, str, FockIndex, FockLabel)
+    # acceptable types for labels
 
     def __init__(
             self, label, *, basis=None, dimension=None, local_identifiers=None,
@@ -225,7 +244,7 @@ class LocalSpace(HilbertSpace, Expression):
         try:
             # we want to normalize the local_identifiers to an arbitrary stable
             # order
-            sorted_local_identifiers = tuple(
+            self._sorted_local_identifiers = tuple(
                 sorted(tuple(local_identifiers.items())))
         except TypeError:
             # this will happen e.g. if the keys in local_identifier are types
@@ -233,10 +252,12 @@ class LocalSpace(HilbertSpace, Expression):
             raise TypeError(
                 "local_identifier must map class names to identifier strings")
 
-        label = str(label)
-        if not self._rx_label.match(label):
-            raise ValueError("label '%s' does not match pattern '%s'"
-                             % (label, self._rx_label.pattern))
+        if not isinstance(label, StrLabel):
+            label = str(label)
+            if not self._rx_label.match(label):
+                raise ValueError(
+                    "label '%s' does not match pattern '%s'"
+                    % (label, self._rx_label.pattern))
         if basis is None:
             if dimension is not None:
                 basis = tuple([str(i) for i in range(dimension)])
@@ -250,14 +271,14 @@ class LocalSpace(HilbertSpace, Expression):
         self._label = label
         self._order_key = KeyTuple((
             order_index, label, str(dimension), basis,
-            sorted_local_identifiers))
+            self._sorted_local_identifiers))
         self._basis = basis
         self._dimension = dimension
         self._local_identifiers = local_identifiers
         self._order_index = order_index
         self._kwargs = OrderedDict([
             ('basis', self._basis), ('dimension', self._dimension),
-            ('local_identifiers', sorted_local_identifiers),
+            ('local_identifiers', self._sorted_local_identifiers),
             ('order_index', self._order_index)])
         self._minimal_kwargs = self._kwargs.copy()
         for key in default_args:
@@ -265,19 +286,80 @@ class LocalSpace(HilbertSpace, Expression):
 
         super().__init__(
             label, basis=basis, dimension=dimension,
-            local_identifiers=sorted_local_identifiers,
+            local_identifiers=self._sorted_local_identifiers,
             order_index=order_index)
 
     @classmethod
     def _check_basis_label_type(cls, label_or_index):
         """Every object (BasisKet, LocalSigma) that contains a label or index
         for an eigenstate of some LocalSpace should call this routine to check
-        the type of that label or index"""
+        the type of that label or index (or, use
+        :meth:`_unpack_basis_label_or_index`"""
         if not isinstance(label_or_index, cls._basis_label_types):
             raise TypeError(
                 "label_or_index must be an instance of one of %s; not %s" % (
                     ", ".join([t.__name__ for t in cls._basis_label_types]),
                     label_or_index.__class__.__name__))
+
+    def _unpack_basis_label_or_index(self, label_or_index):
+        """return tuple (label, ind) from `label_or_index`
+
+        If `label_or_int` is a :class:`.SymbolicLabelBase` sub-instance, it
+        will be stored in the `label` attribute, and the `ind` attribute will
+        return the value of the label's :attr:`.FockIndex.fock_index`
+        attribute.  No checks are performed for symbolic labels.
+
+        :meth:`_check_basis_label_type` is called on `label_or_index`.
+
+        Raises:
+            ValueError: if `label_or_index` is a :class:`str` referencing an
+                invalid basis state; or, if `label_or_index` is an :class:`int`
+                < 0 or >= the dimension of the Hilbert space
+            BasisNotSetError: if `label_or_index` is a :class:`str`, but the
+                Hilbert space has no defined basis
+            TypeError: if `label_or_int` is not a :class:`str`, :class:`int`,
+                or :class:`.SymbolicLabelBase`, or more generally whatever
+                types are allowed through the `_basis_label_types` attribute of
+                the Hilbert space.
+        """
+        self._check_basis_label_type(label_or_index)
+        if isinstance(label_or_index, str):
+            label = label_or_index
+            try:
+                ind = self.basis_labels.index(label)
+                # the above line may also raise BasisNotSetError, which we
+                # don't want to catch here
+            except ValueError:
+                # a less confusing error message:
+                raise ValueError(
+                    "%r is not one of the basis labels %r"
+                    % (label, self.basis_labels))
+        elif isinstance(label_or_index, int):
+            ind = label_or_index
+            if ind < 0:
+                raise ValueError("Index %d must be >= 0" % ind)
+            if self.has_basis:
+                if ind >= self.dimension:
+                    raise ValueError(
+                        "Index %s must be < the dimension %d of Hilbert "
+                        "space %s" % (ind, self.dimension, self))
+                label = self.basis_labels[label_or_index]
+            else:
+                label = str(label_or_index)
+        elif isinstance(label_or_index, SymbolicLabelBase):
+            label = label_or_index
+            try:
+                ind = label_or_index.fock_index
+            except AttributeError:
+                raise TypeError(
+                    "label_or_index must define a fock_index attribute in "
+                    "order to be used for identifying a level in a Hilbert "
+                    "space")
+        else:
+            raise TypeError(
+                "label_or_index must be an int or str, or SymbolicLabelBase, "
+                "not %s" % type(label_or_index))
+        return label, ind
 
     @property
     def args(self):
@@ -325,7 +407,7 @@ class LocalSpace(HilbertSpace, Expression):
 
     @property
     def basis_labels(self):
-        """Tuple of basis labels.
+        """Tuple of basis labels (strings).
 
         Raises:
             .BasisNotSetError: if the Hilbert space has no defined basis
@@ -355,10 +437,6 @@ class LocalSpace(HilbertSpace, Expression):
     @property
     def minimal_kwargs(self):
         return self._minimal_kwargs
-
-    def all_symbols(self):
-        """Empty list"""
-        return {}
 
     def remove(self, other):
         if other == self:
@@ -402,7 +480,8 @@ class LocalSpace(HilbertSpace, Expression):
             ValueError: If `label` is not a label for any basis state in the
                 Hilbert space
             .BasisNotSetError: If the Hilbert space has no defined basis
-            TypeError: if `label_or_index` is neither a `str` nor an `int`
+            TypeError: if `label_or_index` is neither a :class:`str` nor an
+                :class:`int`, nor a :class:`SymbolicLabelBase`
         """
         if isinstance(label_or_index, int):
             new_index = label_or_index + n
@@ -422,6 +501,10 @@ class LocalSpace(HilbertSpace, Expression):
             return self._basis[new_index]
         elif isinstance(label_or_index, SymbolicLabelBase):
             return label_or_index.__class__(expr=label_or_index.expr + n)
+        else:
+            raise TypeError(
+                "Invalid type for label_or_index: %s"
+                % label_or_index.__class__.__name__)
 
 
 @singleton_object
@@ -474,20 +557,16 @@ class TrivialSpace(HilbertSpace, Expression, metaclass=Singleton):
             return TrivialKet
         else:
             if isinstance(index_or_label, int):
-                raise IndexError("No index %d in basis for TrivialSpace"
-                                 % index_or_label)
+                raise IndexError(
+                    "No index %d in basis for TrivialSpace" % index_or_label)
             else:
-                raise KeyError("No label %d in basis for TrivialSpace"
-                                % index_or_label)
+                raise KeyError(
+                    "No label %d in basis for TrivialSpace" % index_or_label)
 
     @property
     def basis_labels(self):
         """The one-element tuple containing the label '0'"""
         return tuple(["0", ])
-
-    def all_symbols(self):
-        """Empty set (no symbols)"""
-        return set(())
 
     def remove(self, other):
         """Removing any Hilbert space from the trivial space yields the trivial
@@ -510,9 +589,6 @@ class TrivialSpace(HilbertSpace, Expression, metaclass=Singleton):
         if other is TrivialSpace:
             return False
         return True
-
-    def __eq__(self, other):
-        return self is other
 
     @property
     def label(self):
@@ -540,10 +616,6 @@ class FullSpace(HilbertSpace, Expression, metaclass=Singleton):
     def _order_key(self):
         return KeyTuple((-1, '_'))
 
-    def all_symbols(self):
-        """Empty set (no symbols)"""
-        return set(())
-
     def remove(self, other):
         """Raise AlgebraError, as the remaining space is undefined"""
         raise AlgebraError("Cannot remove anything from FullSpace")
@@ -563,9 +635,6 @@ class FullSpace(HilbertSpace, Expression, metaclass=Singleton):
         space"""
         return False
 
-    def __eq__(self, other):
-        return self is other
-
     @property
     def label(self):
         return "total"
@@ -577,8 +646,7 @@ class FullSpace(HilbertSpace, Expression, metaclass=Singleton):
 
 
 class ProductSpace(HilbertSpace, Operation):
-    """Tensor product space class for an arbitrary number of
-    :class:`LocalSpace` factors.
+    """Tensor product of local Hilbert spaces
 
     >>> hs1 = LocalSpace('1', basis=(0,1))
     >>> hs2 = LocalSpace('2', basis=(0,1))
@@ -587,9 +655,9 @@ class ProductSpace(HilbertSpace, Operation):
     ('0,0', '0,1', '1,0', '1,1')
     """
 
-    neutral_element = TrivialSpace
-    _simplifications = [empty_trivial, assoc, convert_to_spaces, idem,
-                        filter_neutral]
+    _neutral_element = TrivialSpace
+    simplifications = [empty_trivial, assoc, convert_to_spaces, idem,
+                       filter_neutral]
 
     def __init__(self, *local_spaces):
         if len(set(local_spaces)) != len(local_spaces):
@@ -744,4 +812,3 @@ class ProductSpace(HilbertSpace, Operation):
         if other is FullSpace:
             return True
         return False
-

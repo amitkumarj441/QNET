@@ -12,7 +12,7 @@ from qnet.printing import (
 def test_custom_str_repr_printer():
     """Test the ascii representation of "atomic" circuit algebra elements"""
     init_printing(str_format='unicode', repr_format='unicode')
-    expr = CircuitSymbol("Xi_2", 2)
+    expr = CircuitSymbol("Xi_2", cdim=2)
     assert str(expr) == 'Ξ₂'
     assert repr(expr) == 'Ξ₂'
     with configure_printing(str_format='ascii', repr_format='ascii'):
@@ -22,7 +22,7 @@ def test_custom_str_repr_printer():
     assert repr(expr) == 'Ξ₂'
     with configure_printing(str_format='ascii', repr_format='srepr'):
         assert str(expr) == 'Xi_2'
-        assert repr(expr) == "CircuitSymbol('Xi_2', 2)"
+        assert repr(expr) == "CircuitSymbol('Xi_2', cdim=2)"
     assert str(expr) == 'Ξ₂'
     assert repr(expr) == 'Ξ₂'
     with configure_printing(str_format='ascii', repr_format='unicode'):
@@ -33,22 +33,22 @@ def test_custom_str_repr_printer():
         assert repr(expr) == 'Xi_2'
     with configure_printing(repr_format='tree'):
         assert repr(expr) in [
-            '. CircuitSymbol(Ξ₂, 2)', '. CircuitSymbol(Xi_2, 2)']
+            '. CircuitSymbol(Ξ₂, cdim=2)', '. CircuitSymbol(Xi_2, cdim=2)']
     init_printing()
 
 
 def test_no_cached_rendering():
     """Test that we can temporarily suspend caching"""
-    expr = Feedback(CircuitSymbol("Xi_2", 2), out_port=1, in_port=0)
+    expr = Feedback(CircuitSymbol("Xi_2", cdim=2), out_port=1, in_port=0)
     assert ascii(expr) == '[Xi_2]_{1->0}'
     assert expr in ascii.printer.cache
-    assert CircuitSymbol("Xi_2", 2) in ascii.printer.cache
+    assert CircuitSymbol("Xi_2", cdim=2) in ascii.printer.cache
     with configure_printing(caching=False):
         assert len(ascii.printer.cache) == 0
         assert ascii(expr) == '[Xi_2]_{1->0}'
         assert len(ascii.printer.cache) == 0
     assert expr in ascii.printer.cache
-    assert CircuitSymbol("Xi_2", 2) in ascii.printer.cache
+    assert CircuitSymbol("Xi_2", cdim=2) in ascii.printer.cache
 
 
 def test_sympy_tex_cached():
@@ -163,3 +163,18 @@ def test_custom_repr():
         assert repr(A) == "OperatorSymbol('A', hs=LocalSpace('1'))"
     assert repr(A) in ['Â⁽¹⁾', 'A^(1)']
 
+
+def test_exception_teardown():
+    """Test that teardown works when breaking out due to an exception"""
+    class ConfigurePrintingException(Exception):
+        pass
+    init_printing(show_hs_label=True, repr_format='ascii')
+    try:
+        with configure_printing(show_hs_label=False, repr_format='srepr'):
+            raise ConfigurePrintingException
+    except ConfigurePrintingException:
+        A = OperatorSymbol('A', hs=1)
+        assert repr(A) == 'A^(1)'
+    finally:
+        # Even if this failed we don't want to make a mess for other tests
+        init_printing(reset=True)

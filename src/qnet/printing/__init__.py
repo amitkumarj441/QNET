@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from collections import defaultdict
 from functools import partial
 
+from sympy.interactive.printing import init_printing as sympy_init_printing
 from sympy.printing.printer import Printer as SympyPrinter
 
 from .base import QnetBasePrinter
@@ -43,7 +44,7 @@ def _printer_cls(label, class_address, require_base=QnetBasePrinter):
         return cls
 
 
-def init_printing(*, reset=False, **kwargs):
+def init_printing(*, reset=False, init_sympy=True, **kwargs):
     """Initialize the printing system.
 
     This determines the behavior of the :func:`ascii`, :func:`unicode`,
@@ -88,8 +89,7 @@ def init_printing(*, reset=False, **kwargs):
     allows for more detailed settings through a config file, see the
     :ref:`notes on using an INI file <ini_file_printing>`.
 
-
-    If `str_format` or `repr_format` are not given, they will be set of
+    If `str_format` or `repr_format` are not given, they will be set to
     'unicode' if the current terminal is known to support an UTF8 (accordig to
     ``sys.stdout.encoding``), and 'ascii' otherwise.
 
@@ -99,6 +99,9 @@ def init_printing(*, reset=False, **kwargs):
     defaults, you may pass ``reset=True``.  In a Jupyter notebook, expressions
     are rendered graphically via LaTeX, using the settings as they affect the
     :func:`latex` printer.
+
+    The :func:`sympy.init_printing()` routine is called automatically, unless
+    `init_sympy` is given as ``False``.
 
     See also:
         :func:`configure_printing` allows to temporarily change the printing
@@ -110,6 +113,13 @@ def init_printing(*, reset=False, **kwargs):
     logger = logging.getLogger(__name__)
     if reset:
         SympyPrinter._global_settings = {}
+    if init_sympy:
+        if kwargs.get('repr_format', '') == 'unicode':
+            sympy_init_printing(use_unicode=True)
+        if kwargs.get('repr_format', '') == 'ascii':
+            sympy_init_printing(use_unicode=False)
+        else:
+            sympy_init_printing()  # let sympy decide by itself
     if 'inifile' in kwargs:
         invalid_kwargs = False
         if '_freeze' in kwargs:
@@ -268,16 +278,18 @@ def configure_printing(**kwargs):
 
         >>> A = OperatorSymbol('A', hs=1); B = OperatorSymbol('B', hs=1)
         >>> with configure_printing(show_hs_label=False):
-        ...     ascii(A + B)
-        'A + B'
-        >>> ascii(A + B)
-        'A^(1) + B^(1)'
+        ...     print(ascii(A + B))
+        A + B
+        >>> print(ascii(A + B))
+        A^(1) + B^(1)
     """
     freeze = init_printing(_freeze=True, **kwargs)
-    yield
-    for obj, attr_map in freeze.items():
-        for attr, val in attr_map.items():
-            setattr(obj, attr, val)
+    try:
+        yield
+    finally:
+        for obj, attr_map in freeze.items():
+            for attr, val in attr_map.items():
+                setattr(obj, attr, val)
 
 
 def ascii(expr, cache=None, **settings):
@@ -406,6 +418,8 @@ def latex(expr, cache=None, **settings):
             <https://ctan.org/tex-archive/macros/latex/contrib/braket>`_. Note
             that this will not automatically render in IPython Notebooks, but
             it is recommended when generating latex for a document.
+        tex_frac_for_spin_labels (bool): Whether to use '\frac' when printing
+            basis state labels for spin Hilbert spaces
 
 
     Examples:
@@ -448,6 +462,13 @@ def latex(expr, cache=None, **settings):
         '\\identity'
         >>> latex(LocalSigma(0, 1, hs=1), tex_use_braket=True)
         '\\Ket{0}\\!\\Bra{1}^{(1)}'
+
+        >>> spin = SpinSpace('s', spin=(1, 2))
+        >>> up = SpinBasisKet(1, 2, hs=spin)
+        >>> latex(up)
+        '\\left\\lvert +1/2 \\right\\rangle^{(s)}'
+        >>> latex(up, tex_frac_for_spin_labels=True)
+        '\\left\\lvert +\\frac{1}{2} \\right\\rangle^{(s)}'
 
     Note that the accepted parameters and their default values may be changed
     through :func:`init_printing` or :func:`configure_printing`

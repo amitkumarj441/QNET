@@ -1,5 +1,4 @@
-"""Implementation of the SLH circuit algebra.
-
+"""Implementation of the SLH circuit algebra
 
 For more details see :ref:`circuit_algebra`.
 """
@@ -10,6 +9,7 @@ from collections import OrderedDict
 from functools import reduce
 
 import numpy as np
+import sympy
 from sympy import I
 from sympy import Matrix as SympyMatrix
 from sympy import symbols, sympify
@@ -17,32 +17,31 @@ from sympy import symbols, sympify
 from .abstract_algebra import (
     Expression, Operation, substitute, )
 from .algebraic_properties import (
-    assoc, check_cdims, filter_neutral, match_replace, match_replace_binary, )
+    assoc, check_cdims, filter_neutral, filter_cid, match_replace,
+    match_replace_binary)
 from .exceptions import (
-    AlgebraError, BasisNotSetError, CannotConvertToABCD, CannotConvertToSLH,
+    AlgebraError, BasisNotSetError, CannotConvertToSLH,
     CannotEliminateAutomatically, CannotVisualize, IncompatibleBlockStructures,
-    WrongCDimError, )
-from .hilbert_space_algebra import (
-    FullSpace, LocalSpace, ProductSpace, TrivialSpace, )
+    WrongCDimError)
+from .hilbert_space_algebra import LocalSpace, ProductSpace
 from .matrix_algebra import (
-    Im, ImAdjoint, Matrix, block_matrix, identity_matrix, permutation_matrix,
-    vstackm, zerosm, )
+    Matrix, block_matrix, identity_matrix, permutation_matrix,
+    vstackm, zerosm)
 from .operator_algebra import (
-    Create, Destroy, IdentityOperator, LocalProjector, LocalSigma, Operator,
+    IdentityOperator, LocalProjector, LocalSigma, Operator,
     OperatorPlus, OperatorSymbol, ScalarTimesOperator, ZeroOperator, adjoint,
-    get_coeffs, )
+    get_coeffs)
 from ...utils.permutations import (
     BadPermutationError, block_perm_and_perms_within_blocks, check_permutation,
     full_block_perm, invert_permutation, permutation_to_block_permutations, )
 from ...utils.singleton import Singleton, singleton_object
 
 __all__ = [
-    'ABCD', 'CPermutation', 'CircuitSymbol', 'Concatenation', 'Feedback',
-    'Circuit', 'SLH', 'SeriesInverse', 'SeriesProduct', 'FB', 'P_sigma',
-    'circuit_identity', 'cid', 'cid_1', 'eval_adiabatic_limit',
-    'extract_signal', 'extract_signal_circuit', 'getABCD',
-    'get_common_block_structure', 'map_signals', 'map_signals_circuit',
-    'move_drive_to_H', 'pad_with_identity', 'prepare_adiabatic_limit',
+    'CPermutation', 'CircuitSymbol', 'Concatenation', 'Feedback',
+    'Circuit', 'SLH', 'SeriesInverse', 'SeriesProduct', 'FB',
+    'circuit_identity', 'eval_adiabatic_limit',
+    'extract_channel', 'getABCD', 'map_channels', 'move_drive_to_H',
+    'pad_with_identity', 'prepare_adiabatic_limit',
     'try_adiabatic_elimination', 'CIdentity', 'CircuitZero', 'Component', ]
 
 __private__ = []  # anything not in __all__ must be in __private__
@@ -54,7 +53,7 @@ __private__ = []  # anything not in __all__ must be in __private__
 
 
 class Circuit(metaclass=ABCMeta):
-    """Abstract base class for the circuit algebra elements."""
+    """Base class for the circuit algebra elements"""
 
     @property
     @abstractmethod
@@ -68,12 +67,12 @@ class Circuit(metaclass=ABCMeta):
     @property
     def block_structure(self) -> tuple:
         """If the circuit is *reducible* (i.e., it can be represented as a
-        :py:class:Concatenation: of individual circuit expressions),
+        :class:`Concatenation` of individual circuit expressions),
         this gives a tuple of cdim values of the subblocks.
         E.g. if A and B are irreducible and have ``A.cdim = 2``, ``B.cdim = 3``
 
-            >>> A = CircuitSymbol('A', 2)
-            >>> B = CircuitSymbol('B', 3)
+            >>> A = CircuitSymbol('A', cdim=2)
+            >>> B = CircuitSymbol('B', cdim=3)
 
         Then the block structure of their Concatenation is:
 
@@ -87,6 +86,12 @@ class Circuit(metaclass=ABCMeta):
             >>> B.block_structure
             (3,)
 
+        See also:
+
+            :meth:`get_blocks` allows to actually retrieve the blocks::
+
+                >>> (A + B).get_blocks()
+                (A, B)
         """
         return self._block_structure
 
@@ -95,7 +100,8 @@ class Circuit(metaclass=ABCMeta):
         return tuple((self.cdim, ))
 
     def index_in_block(self, channel_index: int) -> int:
-        """Return the index a channel has within the subblock it belongs to.
+        """Return the index a channel has within the subblock it belongs to
+
         I.e., only for reducible circuits, this gives a result different from
         the argument itself.
 
@@ -152,12 +158,13 @@ class Circuit(metaclass=ABCMeta):
                                           "structure %s" % (block_structure,))
 
     def series_inverse(self) -> 'Circuit':
-        """Return the inverse object (under the series product) for a circuit.
+        """Return the inverse object (under the series product) for a circuit
+
         In general for any X
 
             >>> X = CircuitSymbol('X', cdim=3)
             >>> (X << X.series_inverse() == X.series_inverse() << X ==
-            ...  cid(X.cdim))
+            ...  circuit_identity(X.cdim))
             True
         """
         return self._series_inverse()
@@ -211,7 +218,7 @@ class Circuit(metaclass=ABCMeta):
         if not fname:
 
             tmp_dir = gettempdir()
-            fname = tmp_dir + "/tmp_{}.png".format(hash(time))
+            fname = os.path.join(tmp_dir, "tmp_{}.png".format(hash(time)))
 
         if circuit_visualization.draw_circuit(self, fname):
             done = False
@@ -228,7 +235,8 @@ class Circuit(metaclass=ABCMeta):
         raise CannotVisualize()
 
     def creduce(self) -> 'Circuit':
-        """If the circuit is reducible, try to reduce each subcomponent once.
+        """If the circuit is reducible, try to reduce each subcomponent once
+
         Depending on whether the components at the next hierarchy-level are
         themselves reducible, successive ``circuit.creduce()`` operations
         yields an increasingly fine-grained decomposition of a circuit into its
@@ -242,28 +250,12 @@ class Circuit(metaclass=ABCMeta):
 
     def toSLH(self) -> 'SLH':
         """Return the SLH representation of a circuit. This can fail if there
-        are un-substituted pure circuit all_symbols (:py:class:`CircuitSymbol`)
-        left in the expression or if the circuit includes *non-passive* ABCD
-        models (cf. [1]_)
-        """
+        are un-substituted pure circuit symbols (:py:class:`CircuitSymbol`)
+        left in the expression"""
         return self._toSLH()
 
     @abstractmethod
     def _toSLH(self) -> 'SLH':
-        raise NotImplementedError(self.__class__.__name__)
-
-    def toABCD(self, linearize=False) -> 'ABCD':
-        """Return the ABCD representation of a circuit expression. If
-        `linearize=True` all operator expressions giving rise to non-linear
-        equations of motion are dropped.  This can fail if there are
-        un-substituted pure circuit all_symbols (:py:class:`CircuitSymbol`)
-        left in the expression or if `linearize = False` and the circuit
-        includes non-linear SLH models.  (cf. [1]_)
-        """
-        return self._toABCD(linearize)
-
-    @abstractmethod
-    def _toABCD(self, linearize):
         raise NotImplementedError(self.__class__.__name__)
 
     def coherent_input(self, *input_amps) -> 'Circuit':
@@ -291,19 +283,14 @@ class Circuit(metaclass=ABCMeta):
                 CoherentDriveCC as Displace_cc)
 
         if n_inputs == 1:
-            concat_displacements = Displace_cc('W', alpha=input_amps[0])
+            concat_displacements = Displace_cc(displacement=input_amps[0])
         else:
-            displacements = [Displace_cc('W', alpha=amp) if amp != 0
-                             else cid(1)
-                             for amp in input_amps]
+            displacements = [
+                Displace_cc(displacement=amp) if amp != 0
+                else circuit_identity(1)
+                for amp in input_amps]
             concat_displacements = Concatenation(*displacements)
         return self << concat_displacements
-
-    @property
-    @abstractmethod
-    def space(self):
-        """Hilbert space of the circuit"""
-        raise NotImplementedError(self.__class__)
 
     def __lshift__(self, other):
         if isinstance(other, Circuit):
@@ -322,8 +309,11 @@ class Circuit(metaclass=ABCMeta):
 
 
 class SLH(Circuit, Expression):
-    """SLH class to encapsulate an open system model that is parametrized as
-    described in [2]_ , [3]_
+    """Element of the SLH algebra
+
+    The SLH class encapsulate an open system model that is parametrized the a
+    scattering matrix (S), a column vector of Lindblad operators (L), and a
+    Hamiltonian (H).
 
     Args:
         S (Matrix): The scattering matrix (with in general Operator-valued
@@ -380,13 +370,14 @@ class SLH(Circuit, Expression):
         args_spaces = (self.S.space, self.L.space, self.H.space)
         return ProductSpace.create(*args_spaces)
 
-    def all_symbols(self):
+    @property
+    def free_symbols(self):
         """Set of all symbols occcuring in S, L, or H"""
         return set.union(
-            self.S.all_symbols(), self.L.all_symbols(), self.H.all_symbols())
+            self.S.free_symbols, self.L.free_symbols, self.H.free_symbols)
 
     def series_with_slh(self, other):
-        """Evaluate the series product with another :py:class:``SLH`` object.
+        """Series product with another :class:`SLH` object
 
         Args:
             other (SLH): An upstream SLH circuit.
@@ -396,6 +387,9 @@ class SLH(Circuit, Expression):
         """
         new_S = self.S * other.S
         new_L = self.S * other.L + self.L
+
+        def ImAdjoint(m):
+            return (m.H - m) * (I / 2)
 
         delta = ImAdjoint(self.L.adjoint() * self.S * other.L)
 
@@ -408,7 +402,7 @@ class SLH(Circuit, Expression):
         return SLH(new_S, new_L, new_H)
 
     def concatenate_slh(self, other):
-        """Evaluate the concatenation product with another SLH object."""
+        """Concatenation with another :class:`SLH` object"""
         selfS = self.S
         otherS = other.S
         new_S = block_matrix(
@@ -423,17 +417,23 @@ class SLH(Circuit, Expression):
         return self
 
     def expand(self):
-        """Expand out all operator expressions within S, L and H and return a
-        new SLH object with these expanded expressions.
+        """Expand out all operator expressions within S, L and H
+
+        Return a new :class:`SLH` object with these expanded expressions.
         """
         return SLH(self.S.expand(), self.L.expand(), self.H.expand())
 
-    def simplify_scalar(self):
-        """Simplify all scalar expressions within S, L and H and return a new
-        SLH object with the simplified expressions.
+    def simplify_scalar(self, func=sympy.simplify):
+        """Simplify all scalar expressions within S, L and H
+
+        Return a new :class:`SLH` object with the simplified expressions.
+
+        See also: :meth:`.QuantumExpression.simplify_scalar`
         """
-        return SLH(self.S.simplify_scalar(), self.L.simplify_scalar(),
-                   self.H.simplify_scalar())
+        return SLH(
+            self.S.simplify_scalar(func=func),
+            self.L.simplify_scalar(func=func),
+            self.H.simplify_scalar(func=func))
 
     def _series_inverse(self):
         return SLH(self.S.adjoint(), - self.S.adjoint() * self.L, -self.H)
@@ -450,12 +450,12 @@ class SLH(Circuit, Expression):
 
         if out_port != n:
             return (
-                map_signals_circuit({out_port: n}, self.cdim).toSLH() <<
+                map_channels({out_port: n}, self.cdim).toSLH() <<
                 self
             ).feedback(in_port=in_port)
         elif in_port != n:
             return (
-                self << map_signals_circuit({n: in_port}, self.cdim).toSLH()
+                self << map_channels({n: in_port}, self.cdim).toSLH()
             ).feedback()
 
         S, L, H = self.S, self.L, self.H
@@ -480,7 +480,12 @@ class SLH(Circuit, Expression):
 
         new_S = S[:n, :n] + S[:n, n:] * one_minus_Snn_inv * S[n:, :n]
         new_L = L[:n] + S[:n, n] * one_minus_Snn_inv * L[n]
-        delta_H = Im((L.adjoint() * S[:, n:]) * one_minus_Snn_inv * L[n, 0])
+
+        def ImAdjoint(m):
+            return (m.H - m) * (I / 2)
+
+        delta_H = ImAdjoint(
+            (L.adjoint() * S[:, n:]) * one_minus_Snn_inv * L[n, 0])
 
         if isinstance(delta_H, Matrix):
             delta_H = delta_H[0, 0]
@@ -494,7 +499,8 @@ class SLH(Circuit, Expression):
         return liouvillian(self.H, self.L)
 
     def symbolic_master_equation(self, rho=None):
-        """Compute the symbolic Liouvillian acting on a state rho.
+        """Compute the symbolic Liouvillian acting on a state rho
+
         If no rho is given, an OperatorSymbol is created in its place.
         This correspnds to the RHS of the master equation
         in which an average is taken over the external noise degrees of
@@ -542,7 +548,7 @@ class SLH(Circuit, Expression):
         if noises is not None:
             if not isinstance(noises, Matrix):
                 noises = Matrix(noises)
-            LambdaT = (noises.conjugate() * noises.transpose()).transpose()
+            LambdaT = (noises.adjoint().transpose() * noises.transpose()).transpose()
             assert noises.shape == L.shape
             S = self.S
             summands.append((adjoint(noises) * S.adjoint() * (X * L - L * X))
@@ -562,121 +568,8 @@ class SLH(Circuit, Expression):
     def __iter__(self):
         return iter((self.S, self.L, self.H))
 
-    def __len__(self):
-        return 3
-
-    def _toABCD(self, linearize):
-        raise NotImplementedError()
-
     def _coherent_input(self, *input_amps):
         return super(SLH, self)._coherent_input(*input_amps).toSLH()
-
-
-###############################################################################
-# ABCD
-###############################################################################
-
-
-class ABCD(Circuit, Expression):
-    r"""ABCD model class in amplitude representation.
-
-        ``ABCD(A, B, C, D, w, space)``
-
-    I.e. for a doubled up vector a = (a_1, ..., a_n, a_1^*, ... a_n^*)^T =
-    double_up((a_1, ..., a_n)^T) and doubled up noises dA = (dA_1, ..., dA_m,
-    dA_1^*, ..., dA_m^*)^T = double_up((dA_1, ..., dA_n)^T) The equation of
-    motion for a is
-
-    .. math::
-        da = A a dt + B (dA + double_up(w) dt)
-
-    The output field dA' is given by
-
-    .. math::
-        dA' = C a dt + D (dA + double_up(w) dt)
-
-    Args:
-        A (Matrix): Coupling matrix; internal to internal, scalar valued
-            elements, ``shape = (2*n,2*n)``
-        B (Matrix): Coupling matrix external input to internal, scalar valued
-            elements, ``shape = (2*n,2*m)``
-        C (Matrix): Coupling matrix internal to external output, scalar valued
-            elements, ``shape = (2*m,2*n)``
-        D (Matrix): Coupling matrix external input to output, scalar valued
-            elements, ``shape = (2*m,2*m)``
-        w (Matrix): Coherent input amplitude vector, **NOT DOUBLED UP**, scalar
-            valued elements, ``shape = (m,1)``
-        space (HilbertSpace): Hilbert space with exactly n local factor spaces
-            corresponding to the n internal degrees of freedom.
-    """
-    def __init__(self, A, B, C, D, w, space):
-        n2, m2 = B.shape
-        if not n2 % 2:
-            raise ValueError()
-        if not m2 % 2:
-            raise ValueError()
-        n, m = n2 / 2, m2 / 2
-        if not A.shape == (n2, n2):
-            raise ValueError()
-        if not C.shape == (m2, n2):
-            raise ValueError()
-        if not D.shape == (m2, m2):
-            raise ValueError()
-        if not w.shape == (m, 1):
-            raise ValueError()
-        if not len(space.local_factors) == n:
-            raise AlgebraError(str(space) + " != " + str(n))
-        self.A = A
-        self.B = B
-        self.C = C
-        self.D = D
-        self.w = w
-        self._space = space
-        super.__init__(A, B, C, D, w, space)
-
-    @property
-    def space(self):
-        """Total Hilbert space"""
-        return self._space
-
-    def _creduce(self):
-        return self
-
-    @property
-    def args(self):
-        return self.A, self.B, self.C, self.D, self.w, self._space
-
-    @property
-    def n(self):
-        """The number of oscillators (int)."""
-        return len(self.space.local_factors)
-
-    @property
-    def m(self):
-        """The number of external fields (int)"""
-        return self.D.shape[0] / 2
-
-    @property
-    def cdim(self):
-        """Dimension of circuit"""
-        return self.m
-
-    def _get_blocks(self, block_structure):
-        return self,
-
-    @property
-    def _block_structure(self):
-        return self.cdim,
-
-    def _toABCD(self, linearize):
-        return self
-
-    def _toSLH(self):
-        # TODO IMPLEMENT ABCD._toSLH()
-        vstackm((
-            Matrix([[Destroy(hs=spc) for spc in self.space.local_factors]]).T,
-            Matrix([[Create(hs=spc) for spc in self.space.local_factors]]).T
-        ))
 
 
 ###############################################################################
@@ -685,39 +578,49 @@ class ABCD(Circuit, Expression):
 
 
 class CircuitSymbol(Circuit, Expression):
-    """Circuit Symbol object, parametrized by an identifier (name) and channel
-    dimension `cdim`.
-    """
-    _rx_name = re.compile('^[A-Za-z][A-Za-z0-9]*(_[A-Za-z0-9().+-]+)?$')
+    """Symbolic circuit element
 
-    def __init__(self, name, cdim):
-        name = str(name)
+    Args:
+        label (str): Label for the symbol
+        sym_args (Scalar): optional scalar arguments. With zero `sym_args`, the
+            resulting symbol is a constant. With one or more `sym_args`, it
+            becomes a function.
+        cdim (int): The circuit dimension, that is, the number of I/O lines
+    """
+    _rx_label = re.compile('^[A-Za-z][A-Za-z0-9]*(_[A-Za-z0-9().+-]+)?$')
+
+    def __init__(self, label, *sym_args, cdim):
+        label = str(label)
         cdim = int(cdim)
-        self._name = name
+        self._label = label
         self._cdim = cdim
-        if not self._rx_name.match(name):
-            raise ValueError("name '%s' does not match pattern '%s'"
-                             % (self.name, self._rx_name.pattern))
-        super().__init__(name, cdim)
+        self._sym_args = tuple(sym_args)
+        if not self._rx_label.match(label):
+            raise ValueError("label '%s' does not match pattern '%s'"
+                             % (self.label, self._rx_label.pattern))
+        super().__init__(label, *sym_args, cdim=cdim)
 
     @property
-    def name(self):
-        return self._name
+    def label(self):
+        return self._label
 
     @property
     def args(self):
-        return self._name, self._cdim
+        return (self.label, ) + self._sym_args
 
-    def all_symbols(self):
-        return {}
+    @property
+    def kwargs(self):
+        return {'cdim': self.cdim}
+
+    @property
+    def sym_args(self):
+        """Tuple of arguments of the symbol"""
+        return self._sym_args
 
     @property
     def cdim(self):
         """Dimension of circuit"""
         return self._cdim
-
-    def _toABCD(self, linearize):
-        raise CannotConvertToABCD()
 
     def _toSLH(self):
         raise CannotConvertToSLH()
@@ -725,19 +628,130 @@ class CircuitSymbol(Circuit, Expression):
     def _creduce(self):
         return self
 
+
+class Component(CircuitSymbol, metaclass=ABCMeta):
+    """Base class for circuit components
+
+    A circuit component is a :class:`CircuitSymbol` that knows its own SLH
+    representation. Consequently, it has a fixed number of I/O
+    channels (:attr:`CDIM` class attribute), and a fixed number of named
+    arguments. Components only accept keyword arguments.
+
+    Any subclass of :class:`Component` must define all of the class attributes
+    listed below, and the :meth:`_toSLH` method that return the :class:`SLH`
+    object for the component. Subclasses must also use the
+    :func:`.properties_for_args` class decorator::
+
+        @partial(properties_for_args, arg_names='ARGNAMES')
+
+    Args:
+        label (str): label for the component. Defaults to :attr:`IDENTIFIER`
+        kwargs: values for the parameters in :attr:`ARGNAMES`
+
+    Class Attributes:
+        CDIM: the circuit dimension (number of I/O channels)
+        PORTSIN: list of names for the input ports of the component
+        PORTSOUT: list of names for the output ports of the component
+        ARGNAMES: the name of the keyword-arguments for the components
+            (excluding ``'label'``)
+        DEFAULTS: mapping of keyword-argument names to default values
+        IDENTIFIER: the default `label`
+
+    Note:
+        The port names defined in :attr:`PORTSIN` and :attr:`PORTSOUT` may be
+        used when defining connection via :func:`.connect`.
+
+    See also:
+        :mod:`qnet.algebra.library.circuit_components` for example
+        :class:`Component` subclasses.
+    """
+
+    CDIM = 0
+    PORTSIN = ()
+    PORTSOUT = ()
+    ARGNAMES = ()
+    DEFAULTS = {}
+    IDENTIFIER = ''
+
+    def __init__(self, *, label=None, **kwargs):
+        # since Components are commonly user-defined, we do a quick
+        # sanity-check that they've defined the necessary class attributes
+        # correctly:
+        assert isinstance(self.CDIM, int) and self.CDIM > 0
+        assert len(self.PORTSIN) == self.CDIM
+        assert all([isinstance(name, str) for name in self.PORTSIN])
+        assert len(self.PORTSOUT) == self.CDIM
+        assert all([isinstance(name, str) for name in self.PORTSOUT])
+        assert len(self.DEFAULTS.keys()) == len(self.ARGNAMES)
+        assert all([name in self.DEFAULTS.keys() for name in self.ARGNAMES])
+        assert isinstance(self.IDENTIFIER, str) and len(self.IDENTIFIER) > 0
+        assert self._has_properties_for_args, \
+            "must use properties_for_args class decorater"
+
+        if label is None:
+            label = self.IDENTIFIER
+        else:
+            label = str(label)
+
+        for arg_name in kwargs:
+            if arg_name not in self.ARGNAMES:
+                raise TypeError(
+                    "%s got an unexpected keyword argument '%s'"
+                    % (self.__class__.__name__, arg_name))
+
+        self._kwargs = OrderedDict([('label', label)])
+        self._minimal_kwargs = OrderedDict()
+        if label != self.IDENTIFIER:
+            self._minimal_kwargs['label'] = label
+
+        args = []
+        for arg_name in self.ARGNAMES:
+            val = kwargs.get(arg_name, self.DEFAULTS[arg_name])
+            args.append(val)
+            self.__dict__['_%s' % arg_name] = val
+            # properties_for_args class decorator creates properties for each
+            # arg_name
+            self._kwargs[arg_name] = val
+            if val != self.DEFAULTS[arg_name]:
+                self._minimal_kwargs[arg_name] = val
+
+        super().__init__(label, *args, cdim=self.CDIM)
+
     @property
-    def space(self):
-        """FullSpace (Circuit Symbols are not restricted to a particular
-        Hilbert space)"""
-        return FullSpace
+    def args(self):
+        """Empty tuple (no arguments)
+
+        See also:
+            :attr:`~CircuitSymbol.sym_args` is a tuple of the keyword argument
+            values.
+        """
+        return ()
+
+    @property
+    def kwargs(self):
+        """An :class:`.OrderedDict` with the value for the `label` argument, as
+        well as any name in :attr:`ARGNAMES`
+        """
+        return self._kwargs
+
+    @property
+    def minimal_kwargs(self):
+        """An :class:`.OrderedDict` with the keyword arguments necessary to
+        instantiate the component.
+        """
+        return self._minimal_kwargs
+
+    @abstractmethod
+    def _toSLH(self):
+        pass
 
 
 class CPermutation(Circuit, Expression):
-    r"""The channel permuting circuit. This circuit expression is only a
-    rearrangement of input and output fields. A channel permutation is given as
-    a tuple of image points. Permutations are usually represented as
+    r"""Channel permuting circuit
 
-    A permutation :math:`\sigma \in \Sigma_n` of :math:`n` elements  is often
+    This circuit expression is only a rearrangement of input and output fields.
+    A channel permutation is given as a tuple of image points. A permutation
+    :math:`\sigma \in \Sigma_n` of :math:`n` elements  is often
     represented in the following form
 
     .. math::
@@ -755,7 +769,7 @@ class CPermutation(Circuit, Expression):
     python tuple of image indices) scatters the :math:`j`-th input field to the
     :math:`\sigma(j)`-th output field.
     """
-    _simplifications = []
+    simplifications = []
     _block_perms = None
 
     def __init__(self, permutation):
@@ -769,7 +783,7 @@ class CPermutation(Circuit, Expression):
         if not check_permutation(permutation):
             raise BadPermutationError(str(permutation))
         if list(permutation) == list(range(len(permutation))):
-            return cid(len(permutation))
+            return circuit_identity(len(permutation))
         return super().create(permutation)
 
     @property
@@ -786,7 +800,7 @@ class CPermutation(Circuit, Expression):
         """
         if not self._block_perms:
             self._block_perms = permutation_to_block_permutations(
-                                                              self.permutation)
+                self.permutation)
         return self._block_perms
 
     @property
@@ -798,9 +812,6 @@ class CPermutation(Circuit, Expression):
         return SLH(permutation_matrix(self.permutation),
                    zerosm((self.cdim, 1)), 0)
 
-    def _toABCD(self, linearize):
-        return self.toSLH().toABCD()
-
     @property
     def cdim(self):
         return self._cdim
@@ -809,7 +820,7 @@ class CPermutation(Circuit, Expression):
         return self
 
     def series_with_permutation(self, other):
-        """Compute the series product with another channel permutation circuit.
+        """Compute the series product with another channel permutation circuit
 
         Args:
             other (CPermutation):
@@ -902,8 +913,8 @@ class CPermutation(Circuit, Expression):
     def _feedback(self, *, out_port, in_port):
         n = self.cdim
         new_perm_circuit = (
-                map_signals_circuit({out_port: (n - 1)}, n) << self <<
-                map_signals_circuit({(n - 1): in_port}, n))
+            map_channels({out_port: (n - 1)}, n) << self <<
+            map_channels({(n - 1): in_port}, n))
         if new_perm_circuit == circuit_identity(n):
             return circuit_identity(n - 1)
         new_perm = list(new_perm_circuit.permutation)
@@ -941,9 +952,9 @@ class CPermutation(Circuit, Expression):
         # (I) is equivalent to
         #       m_{in_im -> (n-1)} <<  self << m_{(n-1) -> in_port}
         #           == (red_self + cid(1))     (I')
-        red_self_plus_cid1 = (map_signals_circuit({in_im: (n - 1)}, n) <<
+        red_self_plus_cid1 = (map_channels({in_im: (n - 1)}, n) <<
                               self <<
-                              map_signals_circuit({(n - 1): in_port}, n))
+                              map_channels({(n - 1): in_port}, n))
         if isinstance(red_self_plus_cid1, CPermutation):
 
             #make sure we can factor
@@ -988,9 +999,9 @@ class CPermutation(Circuit, Expression):
         #       m_{out_port -> (n-1)} <<  self << m_{(n-1)
         #           -> out_inv} == (red_self + cid(1))     (I')
 
-        red_self_plus_cid1 = (map_signals_circuit({out_port: (n - 1)}, n) <<
+        red_self_plus_cid1 = (map_channels({out_port: (n - 1)}, n) <<
                               self <<
-                              map_signals_circuit({(n - 1): out_inv}, n))
+                              map_channels({(n - 1): out_inv}, n))
 
         if isinstance(red_self_plus_cid1, CPermutation):
 
@@ -1008,16 +1019,11 @@ class CPermutation(Circuit, Expression):
 
             return out_inv, circuit_identity(n - 1)
 
-    @property
-    def space(self):
-        """TrivialSpace"""
-        return TrivialSpace
-
 
 @singleton_object
 class CIdentity(Circuit, Expression, metaclass=Singleton):
-    """Single channel circuit identity system, the neutral element of single
-    channel series products."""
+    """Single pass-through channel; neutral element of :class:`SeriesProduct`
+    """
 
     _cdim = 1
 
@@ -1030,19 +1036,6 @@ class CIdentity(Circuit, Expression, metaclass=Singleton):
     def args(self):
         return tuple()
 
-    def __eq__(self, other):
-        if not isinstance(other, Circuit):
-            return NotImplemented
-
-        if self.cdim == other.cdim:
-            if self is other:
-                return True
-            try:
-                return self.toSLH() == other.toSLH()
-            except CannotConvertToSLH:
-                return False
-        return False
-
     def _toSLH(self):
         return SLH(Matrix([[1]]), Matrix([[0]]), 0)
 
@@ -1052,23 +1045,12 @@ class CIdentity(Circuit, Expression, metaclass=Singleton):
     def _series_inverse(self):
         return self
 
-    def _toABCD(self, linearize):
-        return ABCD(zerosm((0, 0)), zerosm((0, 2)), zerosm((2, 0)),
-                    identity_matrix(2), zerosm((1, 1)), TrivialSpace)
-
-    def all_symbols(self):
-        return {self}
-
-    @property
-    def space(self):
-        """TrivialSpace"""
-        return TrivialSpace
-
 
 @singleton_object
 class CircuitZero(Circuit, Expression, metaclass=Singleton):
-    """The zero circuit system, the neutral element of Concatenation. No ports,
-    no internal dynamics."""
+    """Zero circuit, the neutral element of :class:`Concatenation`
+
+    No ports, no internal dynamics."""
     _cdim = 0
 
     @property
@@ -1080,36 +1062,11 @@ class CircuitZero(Circuit, Expression, metaclass=Singleton):
     def args(self):
         return tuple()
 
-    def __eq__(self, other):
-        if self is other:
-            return True
-        if self.cdim == other.cdim:
-            try:
-                return self.toSLH() == other.toSLH()
-            except CannotConvertToSLH:
-                return False
-        return False
-
     def _toSLH(self):
         return SLH(Matrix([[]]), Matrix([[]]), 0)
 
-    def _toABCD(self, linearize):
-        return ABCD(zerosm((0, 0)), zerosm((0, 0)), zerosm((0, 0)),
-                    zerosm((0, 0)), zerosm((0, 0)), TrivialSpace)
-
     def _creduce(self):
         return self
-
-    def all_symbols(self):
-        return {}
-
-    @property
-    def space(self):
-        """TrivialSpace"""
-        return TrivialSpace
-
-
-cid_1 = CIdentity
 
 
 ###############################################################################
@@ -1121,22 +1078,13 @@ class SeriesProduct(Circuit, Operation):
     """The series product circuit operation. It can be applied to any sequence
     of circuit objects that have equal channel dimension.
     """
-    _simplifications = [assoc, filter_neutral, check_cdims,
-                        match_replace_binary]
+    simplifications = [assoc, filter_cid, check_cdims,
+                       match_replace_binary]
     _binary_rules = OrderedDict()  # see end of module
 
-    _space = None  # lazily evaluated
+    _neutral_element = CIdentity
 
-    @singleton_object
-    class neutral_element(metaclass=Singleton):
-        """Generic neutral element checker of the ``SeriesProduct``, it works
-        for any channel dimension."""
-
-        def __eq__(self, other):
-            return self is other or other == cid(other.cdim)
-
-        def __ne__(self, other):
-            return not (self == other)
+    neutral_element = _neutral_element
 
     @property
     def cdim(self):
@@ -1153,32 +1101,19 @@ class SeriesProduct(Circuit, Operation):
         factors = [o.series_inverse() for o in reversed(self.operands)]
         return SeriesProduct.create(*factors)
 
-    def _toABCD(self, linearize):
-        raise NotImplementedError()
-
-    @property
-    def space(self):
-        """Hilbert space of the series product (product space of all operators)
-        """
-        if self._space is None:
-            op_spaces = [o.space for o in self.operands]
-            self._space = ProductSpace.create(*op_spaces)
-        return self._space
-
 
 class Concatenation(Circuit, Operation):
-    """The concatenation product circuit operation. It can be applied to any
-    sequence of circuit objects.
-    """
+    """Concatenation of circuit elements"""
 
-    neutral_element = CircuitZero
-
-    _simplifications = [assoc, filter_neutral, match_replace_binary]
+    simplifications = [assoc, filter_neutral, match_replace_binary]
 
     _binary_rules = OrderedDict()  # see end of module
 
+    _neutral_element = CircuitZero
+
+    neutral_element = _neutral_element
+
     def __init__(self, *operands):
-        self._space = None
         self._cdim = None
         super().__init__(*operands)
 
@@ -1254,33 +1189,22 @@ class Concatenation(Circuit, Operation):
             b2 = Concatenation.create(*blocks[out_block:])
 
             return ((b1 + circuit_identity(b2.cdim - 1)) <<
-                    map_signals_circuit({out_port - 1: in_port}, n - 1) <<
+                    map_channels({out_port - 1: in_port}, n - 1) <<
                     (circuit_identity(b1.cdim - 1) + b2))
         else:
             b1 = Concatenation.create(*blocks[:in_block])
             b2 = Concatenation.create(*blocks[in_block:])
 
             return ((circuit_identity(b1.cdim - 1) + b2) <<
-                    map_signals_circuit({out_port: in_port - 1}, n - 1) <<
+                    map_channels({out_port: in_port - 1}, n - 1) <<
                     (b1 + circuit_identity(b2.cdim - 1)))
-
-    def _toABCD(self, linearize):
-        raise NotImplementedError("ABCD representation of Concatenation not "
-                                  "implemented")
-
-    @property
-    def space(self):
-        """Hilbert space of the Concatenation (Product space of all
-        operators)"""
-        if self._space is None:
-            op_spaces = [o.space for o in self.operands]
-            self._space = ProductSpace.create(*op_spaces)
-        return self._space
 
 
 class Feedback(Circuit, Operation):
-    """The circuit feedback operation applied to a circuit of channel
-    dimension > 1 and an from an output port index to an input port index.
+    """Feedback on a single channel of a circuit
+
+    The circuit feedback operation applied to a circuit of channel
+    dimension > 1 and from an output port index to an input port index.
 
     Args:
         circuit (Circuit): The circuit that undergoes self-feedback
@@ -1289,7 +1213,7 @@ class Feedback(Circuit, Operation):
     """
     delegate_to_method = (Concatenation, SLH, CPermutation)
 
-    _simplifications = [match_replace, ]
+    simplifications = [match_replace, ]
 
     _rules = OrderedDict()  # see end of module
 
@@ -1340,9 +1264,6 @@ class Feedback(Circuit, Operation):
         return self.operand.toSLH().feedback(
                 out_port=self.out_port, in_port=self.in_port)
 
-    def _toABCD(self, linearize):
-        raise NotImplementedError(self.__class__)
-
     def _creduce(self):
         return self.operand.creduce().feedback(
                 out_port=self.out_port, in_port=self.in_port)
@@ -1351,30 +1272,24 @@ class Feedback(Circuit, Operation):
         return Feedback.create(self.operand.series_inverse(),
                                in_port=self.out_port, out_port=self.in_port)
 
-    @property
-    def space(self):
-        """Hilbert space of the Feedback circuit (same as the Hilbert space of
-        the operand)"""
-        return self.operand.space
-
 
 class SeriesInverse(Circuit, Operation):
-    """Symbolic series product inversion operation.
+    """Symbolic series product inversion operation
 
         ``SeriesInverse(circuit)``
 
     One generally has
 
         >>> C = CircuitSymbol('C', cdim=3)
-        >>> SeriesInverse(C) << C == cid(C.cdim)
+        >>> SeriesInverse(C) << C == circuit_identity(C.cdim)
         True
 
     and
 
-        >>> C << SeriesInverse(C) == cid(C.cdim)
+        >>> C << SeriesInverse(C) == circuit_identity(C.cdim)
         True
     """
-    _simplifications = []
+    simplifications = []
     delegate_to_method = (SeriesProduct, Concatenation, Feedback, SLH,
                           CPermutation, CIdentity.__class__)
 
@@ -1398,21 +1313,8 @@ class SeriesInverse(Circuit, Operation):
     def _toSLH(self):
         return self.operand.toSLH().series_inverse()
 
-    def _toABCD(self, **kwargs):
-        raise AlgebraError("SeriesInverse not well-defined in "
-                           "ABCD model context")
-
     def _creduce(self):
         return self.operand.creduce().series_inverse()
-
-    def _substitute(self, var_map, **kwargs):
-        return substitute(self, var_map).series_inverse()
-
-    @property
-    def space(self):
-        """Hilbert space of the series inversion circuit (same Hilbert space as
-        the series product being inverted)"""
-        return self.operand.space
 
 
 ###############################################################################
@@ -1421,7 +1323,7 @@ class SeriesInverse(Circuit, Operation):
 
 
 def circuit_identity(n):
-    """Return the circuit identity for n channels.
+    """Return the circuit identity for n channels
 
     Args:
         n (int): The channel dimension
@@ -1432,27 +1334,13 @@ def circuit_identity(n):
     if n <= 0:
         return CircuitZero
     if n == 1:
-        return cid_1
-    return Concatenation(*((cid_1,) * n))
+        return CIdentity
+    return Concatenation(*((CIdentity,) * n))
 
-
-cid = circuit_identity
-
-
-def P_sigma(*permutation):
-    """Create a channel permutation circuit for the given index image values.
-
-    Args:
-        permutation (int): image points
-
-    Returns:
-        Circuit: CPermutation.create(permutation)
-    """
-    return CPermutation.create(permutation)
 
 
 def FB(circuit, *, out_port=None, in_port=None):
-    """Wrapper for :py:class:Feedback: but with additional default values.
+    """Wrapper for :class:`.Feedback`, defaulting to last channel
 
     Args:
         circuit (Circuit): The circuit that undergoes self-feedback
@@ -1474,95 +1362,41 @@ def FB(circuit, *, out_port=None, in_port=None):
 ###############################################################################
 
 
-def get_common_block_structure(lhs_bs, rhs_bs):
-    """For two block structures ``aa = (a1, a2, ..., an)``, ``bb = (b1, b2,
-    ..., bm)`` generate the maximal common block structure so that every block
-    from aa and bb is contained in exactly one block of the resulting
-    structure.  This is useful for determining how to apply the distributive
-    law when feeding two concatenated Circuit objects into each other.
+def extract_channel(k, cdim):
+    """Create a :class:`CPermutation` that extracts channel `k`
 
-    Examples:
-        ``(1, 1, 1), (2, 1) -> (2, 1)``
-        ``(1, 1, 2, 1), (2, 1, 2) -> (2, 3)``
-
-    Args:
-        lhs_bs (tuple): first block structure
-        rhs_bs (tuple): second block structure
-    """
-
-    # for convenience the arguments may also be Circuit objects
-    if isinstance(lhs_bs, Circuit):
-        lhs_bs = lhs_bs.block_structure
-    if isinstance(rhs_bs, Circuit):
-        rhs_bs = rhs_bs.block_structure
-
-    if sum(lhs_bs) != sum(rhs_bs):
-        raise AlgebraError('Blockstructures have different total '
-                           'channel numbers.')
-
-    if len(lhs_bs) == len(rhs_bs) == 0:
-        return ()
-
-    i = j = 1
-    lsum = 0
-    while True:
-        lsum = sum(lhs_bs[:i])
-        rsum = sum(rhs_bs[:j])
-        if lsum < rsum:
-            i += 1
-        elif rsum < lsum:
-            j += 1
-        else:
-            break
-
-    return (lsum, ) + get_common_block_structure(lhs_bs[i:], rhs_bs[j:])
-
-
-def extract_signal(k, n):
-    """Create a permutation that maps the k-th (zero-based) element to the last
-    element, while preserving the relative order of all other elements.
-
-    Args:
-        k (int): The index to extract
-        n (int): The total number of elements
-
-    Returns:
-        tuple: Permutation image tuple
-    """
-    return tuple(list(range(k)) + [n - 1] + list(range(k, n - 1)))
-
-
-def extract_signal_circuit(k, cdim):
-    """Create a channel permutation circuit that maps the k-th (zero-based)
+    Return a permutation circuit that maps the k-th (zero-based)
     input to the last output, while preserving the relative order of all other
     channels.
 
     Args:
         k (int): Extracted channel index
-        cdim (int): The channel dimension
+        cdim (int): The circuit dimension (number of channels)
 
     Returns:
         Circuit: Permutation circuit
     """
-    return CPermutation.create(extract_signal(k, cdim))
+    n = cdim
+    perm = tuple(list(range(k)) + [n - 1] + list(range(k, n - 1)))
+    return CPermutation.create(perm)
 
 
-def map_signals(mapping, n):
-    """For a given {input:output} mapping in form of a dictionary,
-    generate the permutation that achieves the specified mapping
-    while leaving the relative order of all non-specified elements intact.
+def map_channels(mapping, cdim):
+    """Create a :class:`CPermuation` based on a dict of channel mappings
+
+    For a given mapping in form of a dictionary, generate the channel
+    permutating circuit that achieves the specified mapping while leaving the
+    relative order of all non-specified channels intact.
 
     Args:
         mapping (dict): Input-output mapping of indices (zero-based)
             ``{in1:out1, in2:out2,...}``
-        n (int): total number of elements
+        cdim (int): The circuit dimension (number of channels)
 
     Returns:
-        tuple: Signal mapping permutation image tuple
-
-    Raises:
-        ValueError
+        CPermutation: Circuit mapping the channels as specified
     """
+    n = cdim
     free_values = list(range(n))
 
     for v in mapping.values():
@@ -1574,43 +1408,26 @@ def map_signals(mapping, n):
         if k >= n:
             raise ValueError('the mapping cannot map keys larger than '
                              'cdim - 1')
-    # sorted(set(range(n)).difference(set(mapping.values())))
     permutation = []
-    # print(free_values, mapping, n)
     for k in range(n):
         if k in mapping:
             permutation.append(mapping[k])
         else:
             permutation.append(free_values.pop(0))
-    # print(permutation)
-    return tuple(permutation)
 
-
-def map_signals_circuit(mapping, n):
-    """For a given {input:output} mapping in form of a dictionary,
-    generate the channel permutating circuit that achieves the specified
-    mapping while leaving the relative order of all non-specified channels
-    intact.
-
-    Args:
-        mapping (dict): Input-output mapping of indices (zero-based)
-            ``{in1:out1, in2:out2,...}``
-        n (int): total number of elements
-
-    Returns:
-        Circuit: Signal mapping permutation image tuple
-    """
-    return CPermutation.create(map_signals(mapping, n))
+    return CPermutation.create(tuple(permutation))
 
 
 def pad_with_identity(circuit, k, n):
-    """Pad a circuit by 'inserting' an n-channel identity circuit at index k.
-    I.e., a circuit of channel dimension N is extended to one of channel
-    dimension N+n, where the channels k, k+1, ...k+n-1, just pass through the
-    system unaffected.  E.g. let A, B be two single channel systems
+    """Pad a circuit by adding a `n`-channel identity circuit at index `k`
 
-        >>> A = CircuitSymbol('A', 1)
-        >>> B = CircuitSymbol('B', 1)
+    That is, a circuit of channel dimension $N$ is extended to one of channel
+    dimension $N+n$, where the channels $k$, $k+1$, ...$k+n-1$, just pass
+    through the system unaffected.  E.g. let ``A``, ``B`` be two single channel
+    systems::
+
+        >>> A = CircuitSymbol('A', cdim=1)
+        >>> B = CircuitSymbol('B', cdim=1)
         >>> print(ascii(pad_with_identity(A+B, 1, 2)))
         A + cid(2) + B
 
@@ -1624,7 +1441,7 @@ def pad_with_identity(circuit, k, n):
 
     Returns:
         Circuit: An extended circuit that passes through the channels
-            k, k+1, ..., k+n-1
+            $k$, $k+1$, ..., $k+n-1$
 
     """
     circuit_n = circuit.cdim
@@ -1636,7 +1453,9 @@ def pad_with_identity(circuit, k, n):
 
 
 def getABCD(slh, a0=None, doubled_up=True):
-    """Return the A, B, C, D and (a, c) matrices that linearize an SLH model
+    """Calculate the ABCD-linearization of an SLH model
+
+    Return the A, B, C, D and (a, c) matrices that linearize an SLH model
     about a coherent displacement amplitude a0.
 
     The equations of motion and the input-output relation are then:
@@ -1677,12 +1496,13 @@ def getABCD(slh, a0=None, doubled_up=True):
         * `c`: constant coherent input vector of scattered amplitudes
             contributing to the output
     """
-
+    from qnet.algebra.library.fock_operators import Create, Destroy
     if a0 is None:
         a0 = {}
 
     # the different degrees of freedom
-    modes = sorted(slh.space.local_factors)
+    full_space = ProductSpace.create(slh.S.space, slh.L.space, slh.H.space)
+    modes = sorted(full_space.local_factors)
 
     # various dimensions
     ncav = len(modes)
@@ -1790,10 +1610,12 @@ def getABCD(slh, a0=None, doubled_up=True):
     return map(SympyMatrix, (A, B, C, D, a, c))
 
 
-def move_drive_to_H(slh, which=None):
-    r'''For the given `slh` model, move inhomogeneities in the Lindblad
-    operators (resulting from the presence of a coherent drive, see
-    :class:`.CoherentDriveCC`) to the Hamiltonian.
+def move_drive_to_H(slh, which=None, expand_simplify=True):
+    r'''Move coherent drives from the Lindblad operators to the Hamiltonian.
+
+    For the given SLH model, move inhomogeneities in the Lindblad operators (resulting
+    from the presence of a coherent drive, see :class:`CoherentDriveCC`) to the
+    Hamiltonian.
 
     This exploits the invariance of the Lindblad master equation under the
     transformation  (cf. Breuer and Pettrucione, Ch 3.2.1)
@@ -1808,18 +1630,32 @@ def move_drive_to_H(slh, which=None):
                     (\alpha_j \Op{L}_j^{\dagger} - \alpha_j^* \Op{L}_j)
         \end{align}
 
-    In the context of SLH, this transformation is achieved by feeding `slh`
-    into
+    In the context of SLH, this transformation is achieved by feeding `slh` into
 
     .. math::
         \SLH(\identity, -\mat{\alpha}, 0)
 
-    where $\mat{\alpha}$ has the components $\alpha_i$.
+    where $\mat{\alpha}$ has the elements $\alpha_i$.
 
-    The `which` argument allows to select which subscripts $i$ (circuit
-    dimensions) should be tranformed. The default is all dimensions. If `slh`
-    does not contain any inhomogeneities, it is invariant under the
-    transformation.
+    Parameters
+    ----------
+    slh : SLH
+        SLH model to transform. If `slh` does not contain any inhomogeneities, it is
+        invariant under the transformation.
+
+    which : sequence or None
+        Sequence of circuit dimensions to apply the transform to. If None, all
+        dimensions are transformed.
+
+    expand_simplify : bool
+        if True, expand and simplify the new SLH object before returning. This has no
+        effect if `slh` does not contain any inhomogeneities.
+
+    Returns
+    -------
+    new_slh : SLH
+        Transformed SLH model.
+
     '''
     if which is None:
         which = []
@@ -1832,23 +1668,23 @@ def move_drive_to_H(slh, which=None):
 
     if np.all(np.array(scalarcs) == 0):
         return slh
-    else:
-        return (SLH(identity_matrix(slh.cdim), scalarcs, 0)
-                << slh).expand().simplify_scalar()
+    new_slh = SLH(identity_matrix(slh.cdim), scalarcs, 0) << slh
+    if expand_simplify:
+        return new_slh.expand().simplify_scalar()
+    return new_slh
 
 
 def prepare_adiabatic_limit(slh, k=None):
-    """Prepare the adiabatic elimination procedure for an SLH object with
-    scaling parameter k->\infty
+    """Prepare the adiabatic elimination on an SLH object
 
     Args:
         slh: The SLH object to take the limit for
-        k: The scaling parameter.
+        k: The scaling parameter $k \rightarrow \infty$. The default is a
+            positive symbol 'k'
 
     Returns:
         tuple: The objects ``Y, A, B, F, G, N``
         necessary to compute the limiting system.
-
     """
     if k is None:
         k = symbols('k', positive=True)
@@ -1863,7 +1699,7 @@ def prepare_adiabatic_limit(slh, k=None):
 
 
 def eval_adiabatic_limit(YABFGN, Ytilde, P0):
-    """Compute the limiting SLH model for the adiabatic approximation.
+    """Compute the limiting SLH model for the adiabatic approximation
 
     Args:
         YABFGN: The tuple (Y, A, B, F, G, N)
@@ -1888,13 +1724,11 @@ def eval_adiabatic_limit(YABFGN, Ytilde, P0):
 
 
 def try_adiabatic_elimination(slh, k=None, fock_trunc=6, sub_P0=True):
-    """Attempt to automatically carry out the adiabatic elimination procedure
-    on slh with scaling parameter k.
+    """Attempt to automatically do adiabatic elimination on an SLH object
 
-    This will project the Y operator onto
-    a truncated basis with dimension specified by fock_trunc.
-    sub_P0 controls whether an attempt is made to replace the
-    kernel projector P0 by an IdentityOperator.
+    This will project the `Y` operator onto a truncated basis with dimension
+    specified by `fock_trunc`.  `sub_P0` controls whether an attempt is made to
+    replace the kernel projector P0 by an :class:`.IdentityOperator`.
     """
     ops = prepare_adiabatic_limit(slh, k)
     Y = ops[0]
@@ -1938,8 +1772,7 @@ def try_adiabatic_elimination(slh, k=None, fock_trunc=6, sub_P0=True):
 
     else:
         raise CannotEliminateAutomatically(
-            "Currently only single degree of freedom Y-operators supported"
-            )
+            "Currently only single degree of freedom Y-operators supported")
 
 
 def _cumsum(lst):
@@ -1951,84 +1784,3 @@ def _cumsum(lst):
         sm += s
         ret += [sm]
     return ret
-
-
-class Component(Circuit, Expression, metaclass=ABCMeta):
-    """Base class for all circuit components,
-    both primitive components such as beamsplitters
-    and cavity models and also composite circuit models
-    that are built up from these.
-    Via the creduce() method, an object can be decomposed into its parts.
-    """
-
-    CDIM = 0
-
-    # ingoing port names
-    PORTSIN = []
-
-    # outgoing port names
-    PORTSOUT = []
-
-    _parameters = []
-    _sub_components = []
-
-    _rx_name = re.compile('^[A-Za-z][A-Za-z0-9.]*$')
-
-    def __init__(self, name, **kwargs):
-        self._name = str(name)
-        if not self._rx_name.match(name):
-            raise ValueError("name '%s' does not match pattern '%s'"
-                             % (self.name, self._rx_name.pattern))
-        for pname, val in kwargs.items():
-            if pname in self._parameters:
-                setattr(self, pname, val)
-            else:
-                del kwargs[pname]
-                print("Unknown parameter!")
-        super().__init__(name, **kwargs)
-
-    @property
-    def name(self):
-        return self._name
-
-    @property
-    def args(self):
-        return (self._name, )
-
-    @property
-    def kwargs(self):
-        res = OrderedDict()
-        for key in self._parameters:
-            try:
-                res[key] = getattr(self, key)
-            except AttributeError:
-                pass
-        return res
-
-    @property
-    def cdim(self):
-        return self.CDIM
-
-    def _all_symbols(self):
-        return set(())
-
-    @abstractmethod
-    def _toSLH(self):
-        raise NotImplementedError()
-
-    @property
-    def space(self):
-        return TrivialSpace
-
-    def _creduce(self):
-        return self
-
-    def _toABCD(self, linearize):
-        return self.toSLH().toABCD(linearize)
-
-    def _substitute(self, var_map):
-        all_names = self._parameters
-        all_namesubvals = [(n, substitute(getattr(self, n), var_map))
-                           for n in all_names]
-        return self.__class__(self._name, **dict(all_namesubvals))
-

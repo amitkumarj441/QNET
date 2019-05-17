@@ -1,4 +1,7 @@
+from functools import partial
 from textwrap import dedent
+
+import pytest
 
 from sympy import symbols, sqrt, exp, I
 
@@ -11,7 +14,8 @@ from qnet import (
     CoherentStateKet, UnequalSpaces, ScalarTimesKet, OperatorTimesKet, Bra,
     OverlappingSpaces, SpaceTooLargeError, BraKet, KetBra, SuperOperatorSymbol,
     IdentitySuperOperator, ZeroSuperOperator, SuperAdjoint, SPre, SPost,
-    SuperOperatorTimesOperator, tree as tree_str)
+    SuperOperatorTimesOperator, tree as tree_str,  QuantumDerivative, Scalar,
+    ScalarExpression)
 
 
 def test_circuit_tree():
@@ -25,10 +29,10 @@ def test_circuit_tree():
     . Feedback(..., out_port=2, in_port=0)
       └─ Concatenation(..., CIdentity)
          ├─ SeriesProduct(A_test, β ⊞ γ)
-         │  ├─ CircuitSymbol(A_test, 2)
+         │  ├─ CircuitSymbol(A_test, cdim=2)
          │  └─ Concatenation(β, γ)
-         │     ├─ CircuitSymbol(β, 1)
-         │     └─ CircuitSymbol(γ, 1)
+         │     ├─ CircuitSymbol(β, cdim=1)
+         │     └─ CircuitSymbol(γ, cdim=1)
          └─ CIdentity
     ''').strip()
     tree = tree_str(expr, srepr_leaves=True)
@@ -36,10 +40,10 @@ def test_circuit_tree():
     . Feedback(..., out_port=2, in_port=0)
       └─ Concatenation(..., CIdentity)
          ├─ SeriesProduct(A_test, β ⊞ γ)
-         │  ├─ CircuitSymbol('A_test', 2)
+         │  ├─ CircuitSymbol('A_test', cdim=2)
          │  └─ Concatenation(β, γ)
-         │     ├─ CircuitSymbol('beta', 1)
-         │     └─ CircuitSymbol('gamma', 1)
+         │     ├─ CircuitSymbol('beta', cdim=1)
+         │     └─ CircuitSymbol('gamma', cdim=1)
          └─ CIdentity
     ''').strip()
 
@@ -69,10 +73,10 @@ def test_operator_tree():
     assert tree == dedent(r'''
     . OperatorPlus(2 * A^(q_1), ...)
       +- ScalarTimesOperator(2, A^(q_1))
-      |  +- 2
+      |  +- ScalarValue(2)
       |  +- OperatorSymbol(A, hs=H_q_1)
       +- ScalarTimesOperator(-sqrt(gamma), ...)
-         +- Mul(Integer(-1), Pow(Symbol('gamma', positive=True), Rational(1, 2)))
+         +- ScalarValue(-sqrt(gamma))
          +- OperatorPlus(B^(q_1), C^(q_2))
             +- OperatorSymbol(B, hs=H_q_1)
             +- OperatorSymbol(C, hs=H_q_2)
@@ -94,23 +98,23 @@ def test_ket_tree():
     tree = tree_str(KetBra.create(bell1, bell2))
     assert tree == dedent(r'''
     . ScalarTimesOperator(1/2, ...)
-      ├─ Rational(1, 2)
+      ├─ ScalarValue(1/2)
       └─ KetBra(..., ...)
-         ├─ KetPlus(|e,g⟩^(q₁⊗q₂), ...)
+         ├─ KetPlus(|eg⟩^(q₁⊗q₂), ...)
          │  ├─ TensorKet(|e⟩^(q₁), |g⟩^(q₂))
          │  │  ├─ BasisKet(e, hs=ℌ_q₁)
          │  │  └─ BasisKet(g, hs=ℌ_q₂)
-         │  └─ ScalarTimesKet(-exp(-ⅈ γ), |g,e⟩^(q₁⊗q₂))
-         │     ├─ Mul(Integer(-1), exp(Mul(Integer(-1), I, Symbol('gamma', positive=True))))
+         │  └─ ScalarTimesKet(-exp(-ⅈ γ), |ge⟩^(q₁⊗q₂))
+         │     ├─ ScalarValue(-exp(-ⅈ γ))
          │     └─ TensorKet(|g⟩^(q₁), |e⟩^(q₂))
          │        ├─ BasisKet(g, hs=ℌ_q₁)
          │        └─ BasisKet(e, hs=ℌ_q₂)
-         └─ KetPlus(|e,e⟩^(q₁⊗q₂), -|g,g⟩^(q₁⊗q₂))
+         └─ KetPlus(|ee⟩^(q₁⊗q₂), -|gg⟩^(q₁⊗q₂))
             ├─ TensorKet(|e⟩^(q₁), |e⟩^(q₂))
             │  ├─ BasisKet(e, hs=ℌ_q₁)
             │  └─ BasisKet(e, hs=ℌ_q₂)
-            └─ ScalarTimesKet(-1, |g,g⟩^(q₁⊗q₂))
-               ├─ -1
+            └─ ScalarTimesKet(-1, |gg⟩^(q₁⊗q₂))
+               ├─ ScalarValue(-1)
                └─ TensorKet(|g⟩^(q₁), |g⟩^(q₂))
                   ├─ BasisKet(g, hs=ℌ_q₁)
                   └─ BasisKet(g, hs=ℌ_q₂)
@@ -130,11 +134,58 @@ def test_sop_operations():
         tree == dedent(r'''
         . SuperOperatorPlus(2 A^(q₁), ...)
           ├─ ScalarTimesSuperOperator(2, A^(q₁))
-          │  ├─ 2
+          │  ├─ ScalarValue(2)
           │  └─ SuperOperatorSymbol(A, hs=ℌ_q₁)
           └─ ScalarTimesSuperOperator(-√γ, B^(q₁) + C^(q₂))
-             ├─ Mul(Integer(-1), Pow(Symbol('gamma', positive=True), Rational(1, 2)))
+             ├─ ScalarValue(-√γ)
              └─ SuperOperatorPlus(B^(q₁), C^(q₂))
                 ├─ SuperOperatorSymbol(B, hs=ℌ_q₁)
                 └─ SuperOperatorSymbol(C, hs=ℌ_q₂)
+        ''').strip())
+
+
+@pytest.fixture
+def MyScalarFunc():
+
+    class MyScalarDerivative(QuantumDerivative, Scalar):
+        pass
+
+    class ScalarFunc(ScalarExpression):
+
+        def __init__(self, name, *sym_args):
+            self._name = name
+            self._sym_args = sym_args
+            super().__init__(name, *sym_args)
+
+        def _adjoint(self):
+            return self
+
+        @property
+        def args(self):
+            return (self._name, *self._sym_args)
+
+        def _diff(self, sym):
+            return MyScalarDerivative(self, derivs={sym: 1})
+
+        def _ascii(self, *args, **kwargs):
+            return "%s(%s)" % (
+                self._name, ", ".join([ascii(sym) for sym in self._sym_args]))
+
+    return ScalarFunc
+
+
+def test_derivative_tree(MyScalarFunc):
+    s, t, t0 = symbols('s, t, t_0', real=True)
+    expr = (  # nested derivative
+        MyScalarFunc("f", s, t)
+        .diff(s, n=2)
+        .diff(t)
+        .evaluate_at({t: t0})
+        .diff(t0))
+    tree = tree_str(expr)
+    assert (
+        tree == dedent(r'''
+        . MyScalarDerivative(..., derivs=((t₀, 1)))
+          └─ MyScalarDerivative(..., derivs=..., vals=((t, t₀)))
+             └─ ScalarFunc(f, s, t)
         ''').strip())

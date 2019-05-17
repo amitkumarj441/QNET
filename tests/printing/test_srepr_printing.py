@@ -7,7 +7,7 @@ import pytest
 from sympy import (
     symbols, sqrt, exp, I, Float, Pow, Mul, Integer, Symbol, Rational,
     factorial)
-from numpy import array, float64, complex128, int64
+from numpy import array, float64, complex128, int64, int32
 
 from qnet import(
     CircuitSymbol, CIdentity, CircuitZero, CPermutation, SeriesProduct,
@@ -15,14 +15,69 @@ from qnet import(
     ZeroOperator, Create, Destroy, Jz, Jplus, Jminus, Phase, Displace, Squeeze,
     LocalSigma, tr, Adjoint, PseudoInverse, NullSpaceProjector, OperatorPlus,
     OperatorTimes, ScalarTimesOperator, OperatorTrace, Commutator,
-    OperatorIndexedSum, LocalSpace, TrivialSpace, FullSpace, ProductSpace,
-    Matrix, KetSymbol, ZeroKet, TrivialKet, BasisKet,
+    OperatorIndexedSum, OperatorDerivative, LocalSpace, TrivialSpace,
+    FullSpace, ProductSpace, Matrix, KetSymbol, ZeroKet, TrivialKet, BasisKet,
     CoherentStateKet, UnequalSpaces, OperatorTimesKet, Bra, KetPlus,
     ScalarTimesKet, OverlappingSpaces, SpaceTooLargeError, BraKet, KetBra,
     TensorKet, KetIndexedSum, SuperOperatorSymbol, IdentitySuperOperator,
     ZeroSuperOperator, SuperAdjoint, SPre, SPost, SuperOperatorTimesOperator,
     SuperOperatorPlus, SuperOperatorTimes, ScalarTimesSuperOperator, IdxSym,
-    FockIndex, IndexOverFockSpace, srepr)
+    FockIndex, IndexOverFockSpace, srepr, ScalarValue, ScalarTimes, One, Zero,
+    SpinSpace, Beamsplitter)
+from qnet.printing._render_head_repr import render_head_repr
+
+
+def test_render_head_repr_tuple_list():
+    """Test that render_head_repr works for lists and tuples"""
+    a, b = symbols('a, b')
+    A = OperatorSymbol('A', hs=0)
+    B = OperatorSymbol('B', hs=0)
+
+    expr = ((a, 2), (b, 1))
+    assert render_head_repr(expr) == "((Symbol('a'), 2), (Symbol('b'), 1))"
+
+    expr = [[a, 2], [b, 1]]
+    assert render_head_repr(expr) == "[[Symbol('a'), 2], [Symbol('b'), 1]]"
+
+    expr = [(a, 2), (b, 1)]
+    assert render_head_repr(expr) == "[(Symbol('a'), 2), (Symbol('b'), 1)]"
+
+    expr = ([a, 2], [b, 1])
+    assert render_head_repr(expr) == "([Symbol('a'), 2], [Symbol('b'), 1])"
+
+    expr = (A, (b, 1))
+    assert (
+        render_head_repr(expr) ==
+        "(OperatorSymbol('A', hs=LocalSpace('0')), (Symbol('b'), 1))")
+
+    expr = [(a, 2), (A, B)]
+    assert (
+        render_head_repr(expr) ==
+        "[(Symbol('a'), 2), (OperatorSymbol('A', hs=LocalSpace('0')), "
+        "OperatorSymbol('B', hs=LocalSpace('0')))]")
+
+
+def test_indented_srepr_tuple_list():
+    """Test that indendented srepr of a list or tuple is same as unindented
+
+    Because these occur as kwargs values, they are always printed unindented.
+    """
+    a, b = symbols('a, b')
+    A = OperatorSymbol('A', hs=0)
+    B = OperatorSymbol('B', hs=0)
+    exprs = [
+        ((a, 2), (b, 1)),
+        [[a, 2], [b, 1]],
+        [(a, 2), (b, 1)],
+        ([a, 2], [b, 1]),
+        (A, (b, 1)),
+        [(a, 2), (A, B)],
+    ]
+    for expr in exprs:
+        assert (
+            srepr(expr, indented=True) ==
+            srepr(expr) ==
+            render_head_repr(expr))
 
 
 def test_srepr_local_space():
@@ -46,12 +101,20 @@ def test_srepr_local_space():
 
 def test_srepr_circuit_elements():
     """Test the representation of "atomic" circuit algebra elements"""
-    assert (srepr(CircuitSymbol("C_1", cdim=2)) ==
-            "CircuitSymbol('C_1', 2)")
-    assert (srepr(CIdentity) ==
-            r'CIdentity')
-    assert (srepr(CircuitZero) ==
-            r'CircuitZero')
+    alpha = symbols('alpha')
+    assert (
+        srepr(CircuitSymbol("C_1", cdim=2)) ==
+        "CircuitSymbol('C_1', cdim=2)")
+    assert (
+        srepr(CircuitSymbol("A", alpha, 0, 2, cdim=2)) ==
+        "CircuitSymbol('A', Symbol('alpha'), 0, 2, cdim=2)")
+    assert srepr(CIdentity) == r'CIdentity'
+    assert srepr(CircuitZero) == r'CircuitZero'
+    assert srepr(Beamsplitter()) == r'Beamsplitter()'
+    assert srepr(Beamsplitter(label='BS1')) == r"Beamsplitter(label='BS1')"
+    assert (
+        srepr(Beamsplitter(mixing_angle=alpha)) ==
+        r"Beamsplitter(mixing_angle=Symbol('alpha'))")
 
 
 def test_srepr_idx_sym():
@@ -131,14 +194,13 @@ def test_foreign_srepr(matrix_expr, bell1_expr):
 
     res = srepr(matrix_expr)
     expected = (
-        "Matrix(array([[ScalarTimesOperator(exp(Mul(Integer(-1), "
-        "Rational(1, 2), I, Symbol('gamma'))), "
-        "OperatorSymbol('A', hs=LocalSpace('1'))), "
-        "OperatorSymbol('B', hs=LocalSpace('1'))], "
+        "Matrix(array([[ScalarTimesOperator(ScalarValue(exp(Mul(Integer(-1), "
+        "Rational(1, 2), I, Symbol('gamma')))), OperatorSymbol('A', "
+        "hs=LocalSpace('1'))), OperatorSymbol('B', hs=LocalSpace('1'))], "
         "[OperatorSymbol('C', hs=LocalSpace('1')), "
-        "ScalarTimesOperator(exp(Mul(Rational(1, 2), I, "
-        "conjugate(Symbol('gamma')))), "
-        "OperatorSymbol('D', hs=LocalSpace('1')))]], dtype=object))")
+        "ScalarTimesOperator(ScalarValue(exp(Mul(Rational(1, 2), I, "
+        "conjugate(Symbol('gamma'))))), OperatorSymbol('D', "
+        "hs=LocalSpace('1')))]], dtype=object))")
     assert res == expected
 
     res = srepr(matrix_expr, indented=True)
@@ -147,7 +209,8 @@ def test_foreign_srepr(matrix_expr, bell1_expr):
         array([
             [
                 ScalarTimesOperator(
-                    exp(Mul(Integer(-1), Rational(1, 2), I, Symbol('gamma'))),
+                    ScalarValue(
+                        exp(Mul(Integer(-1), Rational(1, 2), I, Symbol('gamma')))),
                     OperatorSymbol(
                         'A',
                         hs=LocalSpace(
@@ -163,7 +226,8 @@ def test_foreign_srepr(matrix_expr, bell1_expr):
                     hs=LocalSpace(
                         '1')),
                 ScalarTimesOperator(
-                    exp(Mul(Rational(1, 2), I, conjugate(Symbol('gamma')))),
+                    ScalarValue(
+                        exp(Mul(Rational(1, 2), I, conjugate(Symbol('gamma'))))),
                     OperatorSymbol(
                         'D',
                         hs=LocalSpace(
@@ -172,19 +236,20 @@ def test_foreign_srepr(matrix_expr, bell1_expr):
     assert res == expected
 
     expected = (
-        "ScalarTimesKet(Mul(Rational(1, 2), Pow(Integer(2), "
-        "Rational(1, 2))), KetPlus(TensorKet(BasisKet('e', "
-        "hs=LocalSpace('q_1', basis=('g', 'e'))), "
-        "BasisKet('g', hs=LocalSpace('q_2', basis=('g', 'e')))), "
-        "ScalarTimesKet(Mul(Integer(-1), I), TensorKet(BasisKet('g', "
-        "hs=LocalSpace('q_1', basis=('g', 'e'))), "
+        "ScalarTimesKet(ScalarValue(Mul(Rational(1, 2), Pow(Integer(2), "
+        "Rational(1, 2)))), KetPlus(TensorKet(BasisKet('e', "
+        "hs=LocalSpace('q_1', basis=('g', 'e'))), BasisKet('g', "
+        "hs=LocalSpace('q_2', basis=('g', 'e')))), "
+        "ScalarTimesKet(ScalarValue(Mul(Integer(-1), I)), "
+        "TensorKet(BasisKet('g', hs=LocalSpace('q_1', basis=('g', 'e'))), "
         "BasisKet('e', hs=LocalSpace('q_2', basis=('g', 'e')))))))")
     assert srepr(bell1_expr) == expected
 
     res = srepr(bell1_expr, indented=True)
     expected = dedent(r'''
     ScalarTimesKet(
-        Mul(Rational(1, 2), Pow(Integer(2), Rational(1, 2))),
+        ScalarValue(
+            Mul(Rational(1, 2), Pow(Integer(2), Rational(1, 2)))),
         KetPlus(
             TensorKet(
                 BasisKet(
@@ -198,7 +263,8 @@ def test_foreign_srepr(matrix_expr, bell1_expr):
                         'q_2',
                         basis=('g', 'e')))),
             ScalarTimesKet(
-                Mul(Integer(-1), I),
+                ScalarValue(
+                    Mul(Integer(-1), I)),
                 TensorKet(
                     BasisKet(
                         'g',
@@ -273,10 +339,14 @@ def circuit_exprs():
         CircuitSymbol("C_1", cdim=2),
         CIdentity,
         CircuitZero,
+        Beamsplitter(),
+        Beamsplitter(label='BS1'),
+        Beamsplitter(label='BS1', mixing_angle=symbols('phi', positive=True)),
         A << B << C,
         A + B + C,
         A << (beta + gamma),
         A + (B << C),
+        CircuitSymbol("A", 0, symbols('alpha'), cdim=2),
         perm,
         SeriesProduct(perm, (A+B)),
         Feedback((A+B), out_port=3, in_port=0),
@@ -322,10 +392,15 @@ def operator_exprs():
     A = OperatorSymbol("A", hs=hs1)
     B = OperatorSymbol("B", hs=hs1)
     C = OperatorSymbol("C", hs=hs2)
+    a, b = symbols('a, b')
+    A_ab = OperatorSymbol("A", a, b, hs=0)
     gamma = symbols('gamma')
     return [
         OperatorSymbol("A", hs=hs1),
         OperatorSymbol("A_1", hs=hs1*hs2),
+        OperatorSymbol("A_1", symbols('alpha'), symbols('beta'), hs=hs1*hs2),
+        A_ab.diff(a, n=2).diff(b),
+        A_ab.diff(a, n=2).diff(b).evaluate_at({a: 0}),
         OperatorSymbol("Xi_2", hs=(r'q1', 'q2')),
         OperatorSymbol("Xi_full", hs=1),
         IdentityOperator,
@@ -334,10 +409,10 @@ def operator_exprs():
         Create(hs=LocalSpace(1, local_identifiers={'Create': 'b'})),
         Destroy(hs=1),
         Destroy(hs=LocalSpace(1, local_identifiers={'Destroy': 'b'})),
-        Jz(hs=1),
-        Jz(hs=LocalSpace(1, local_identifiers = {'Jz': 'Z'})),
-        Jplus(hs=LocalSpace(1, local_identifiers={'Jplus': 'Jp'})),
-        Jminus(hs=LocalSpace(1, local_identifiers={'Jminus': 'Jm'})),
+        Jz(hs=SpinSpace(1, spin=1)),
+        Jz(hs=SpinSpace(1, spin=1, local_identifiers={'Jz': 'Z'})),
+        Jplus(hs=SpinSpace(1, spin=1, local_identifiers={'Jplus': 'Jp'})),
+        Jminus(hs=SpinSpace(1, spin=1, local_identifiers={'Jminus': 'Jm'})),
         Phase(0.5, hs=1),
         Phase(0.5, hs=LocalSpace(1, local_identifiers={'PhaseCC': 'Ph'})),
         Displace(0.5, hs=1),
@@ -392,6 +467,7 @@ def state_exprs():
         KetSymbol('Psi', hs=hs1),
         KetSymbol('Psi', hs=1),
         KetSymbol('Psi', hs=(1, 2)),
+        KetSymbol('Psi', symbols('alpha'), symbols('beta'), hs=(1, 2)),
         KetSymbol('Psi', hs=1),
         ZeroKet,
         TrivialKet,
@@ -445,6 +521,7 @@ def sop_exprs():
     return [
         SuperOperatorSymbol("A", hs=hs1),
         SuperOperatorSymbol("A_1", hs=hs1*hs2),
+        SuperOperatorSymbol("A", symbols('alpha'), symbols('beta'), hs=hs1),
         IdentitySuperOperator,
         ZeroSuperOperator,
         A + B,

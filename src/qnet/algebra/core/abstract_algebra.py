@@ -2,16 +2,18 @@ r"""Base classes for all Expressions and Operations.
 
 The abstract algebra package provides the foundation for
 symbolic algebra of quantum objects or circuits. All symbolic objects are
-either scalars (see :mod:`~qnet.algebra.core.scalar_types`)  or an instance of
-:class:`Expression`. Algebraic combinations of atomic expressions are instances
-of :class:`Operation`. In this way, any symbolic expression is a tree of
-operations, with children of each node defined through the
-:attr:`Operation.operands` attribute, and the leaves being atomic expressions
-or scalars.
+an instance of :class:`Expression`. Algebraic combinations of atomic
+expressions are instances of :class:`Operation`. In this way, any symbolic
+expression is a tree of operations, with children of each node defined through
+the :attr:`Operation.operands` attribute, and the leaves being atomic
+expressions.
 
 See :ref:`abstract_algebra` for design details and usage.
 """
 import logging
+import inspect
+import textwrap
+from collections import OrderedDict
 from abc import ABCMeta, abstractmethod
 
 from sympy import (
@@ -19,12 +21,12 @@ from sympy import (
 from sympy.core.sympify import SympifyError
 
 from .exceptions import CannotSimplify
-from ..pattern_matching import ProtoExpr, pattern
+from ..pattern_matching import ProtoExpr
 from ...utils.singleton import Singleton
+from ...utils.containers import nested_tuple
 
 __all__ = [
-    'Expression', 'Operation', 'all_symbols',
-    'simplify', 'simplify_by_method', 'substitute']
+    'Expression', 'Operation', 'substitute']
 
 __private__ = []  # anything not in __all__ must be in __private__
 
@@ -39,19 +41,19 @@ LOG_NO_MATCH = False  # also log non-matching rules? (very verbose!)
 
 
 class Expression(metaclass=ABCMeta):
-    """Abstract class for QNET Expressions. All algebraic objects are either
-    scalars (numbers or Sympy expressions) or instances of Expression.
+    """Base class for all QNET Expressions
 
-    Expressions should generally be instantiated using the `create` class
+    Expressions should generally be instantiated using the :meth:`create` class
     method, which takes into account the algebraic properties of the Expression
     and and applies simplifications. It also uses memoization to cache all
     known (sub-)expression. This is possible because expressions are intended
     to be immutable. Any changes to an expression should be made through e.g.
-    :meth:`substitute`, which returns a new modified expression.
+    :meth:`substitute` or :meth:`apply_rule`, which returns a new modified
+    expression.
 
     Every expression has a well-defined list of positional and keyword
     arguments that uniquely determine the expression and that may be accessed
-    through the `args` and `kwargs` property. That is,
+    through the :attr:`args` and :attr:`kwargs` property. That is,
 
     ::
 
@@ -60,14 +62,26 @@ class Expression(metaclass=ABCMeta):
     will return and object identical to `expr`.
 
     Class attributes:
-        instance_caching (bool):  Flag to indicate whether the `create` class
-            method should cache the instantiation of instances
+        instance_caching (bool):  Flag to indicate whether the :meth:`create`
+            class method should cache the instantiation of instances. If True,
+            repeated calls to :meth:`create` with the same arguments return
+            instantly, instead of re-evaluating all simplifications and rules.
+        simplifications (list): List of callable simplifications that
+            :meth:`create` will use to process its positional and keyword
+            arguments. Each callable must take three parameters (the class, the
+            list `args` of positional arguments given to :meth:`create` and a
+            dictionary `kwargs` of keyword arguments given to :meth:`create`)
+            and return either a tuple of new `args` and `kwargs` (which are
+            then handed to the next callable), or an :class:`Expression` (which
+            is directly returned as the result of the call to :meth:`create`).
+            The built-in available simplification callables are in
+            :mod:`~qnet.algebra.core.algebraic_properties`
     """
     # Note: all subclasses of Exression that override `__init__` or `create`
     # *must* call the corresponding superclass method *at the end*. Otherwise,
     # caching will not work correctly
 
-    _simplifications = []
+    simplifications = []
 
     # we cache all instances of Expressions for fast construction
     _instances = {}
@@ -81,19 +95,36 @@ class Expression(metaclass=ABCMeta):
 
     def __init__(self, *args, **kwargs):
         self._hash = None
+        self._free_symbols = None
+        self._bound_symbols = None
+        self._all_symbols = None
         self._instance_key = self._get_instance_key(args, kwargs)
 
     @classmethod
     def create(cls, *args, **kwargs):
-        """Instead of directly instantiating, it is recommended to use create,
-        which applies simplifications to the args and keyword arguments
-        according to the `_simplifications` class attribute, and returns an
-        appropriate object (which may or may not be an instance of the original
-        class)
+        """Instantiate while applying automatic simplifications
+
+        Instead of directly instantiating `cls`, it is recommended to use
+        :meth:`create`, which applies simplifications to the args and keyword
+        arguments according to the :attr:`simplifications` class attribute, and
+        returns an appropriate object (which may or may not be an instance of
+        the original `cls`).
+
+        Two simplifications of particular importance are :func:`.match_replace`
+        and :func:`.match_replace_binary` which apply rule-based
+        simplifications.
+
+        The :func:`.temporary_rules` context manager may be used to allow
+        temporary modification of the automatic simplifications that
+        :meth:`create` uses, in particular the rules for
+        :func:`.match_replace` and :func:`.match_replace_binary`. Inside the
+        managed context, the :attr:`simplifications` class attribute may be
+        modified and rules can be managed with :meth:`add_rule` and
+        :meth:`del_rules`.
         """
         global LEVEL
         if LOG:
-            logger = logging.getLogger(__name__ + '.create')
+            logger = logging.getLogger('QNET.create')
             logger.debug(
                 "%s%s.create(*args, **kwargs); args = %s, kwargs = %s",
                 ("  " * LEVEL), cls.__name__, args, kwargs)
@@ -108,7 +139,7 @@ class Expression(metaclass=ABCMeta):
                 return instance
         except KeyError:
             pass
-        for i, simplification in enumerate(cls._simplifications):
+        for i, simplification in enumerate(cls.simplifications):
             if LOG:
                 try:
                     simpl_name = simplification.__name__
@@ -165,7 +196,144 @@ class Expression(metaclass=ABCMeta):
         identical by definition (although `expr1 is expr2` generally only holds
         for explicit Singleton instances)
         """
-        return (cls,) + tuple(args) + tuple(sorted(kwargs.items()))
+        return (cls,) + nested_tuple(args) + nested_tuple(kwargs)
+
+    @classmethod
+    def _rules_attr(cls):
+        """Return the name of the attribute with rules for :meth:`create`"""
+        from qnet.algebra.core.algebraic_properties import (
+            match_replace, match_replace_binary)
+        if match_replace in cls.simplifications:
+            return '_rules'
+        elif match_replace_binary in cls.simplifications:
+            return '_binary_rules'
+        else:
+            raise TypeError(
+                "class %s does not have match_replace or "
+                "match_replace_binary in its simplifications" % cls.__name__)
+
+    @classmethod
+    def add_rule(cls, name, pattern, replacement, attr=None):
+        """Add an algebraic rule for :meth:`create` to the class
+
+        Args:
+            name (str): Name of the rule. This is used for debug logging to
+                allow an analysis of which rules where applied when creating an
+                expression. The `name` can be arbitrary, but it must be unique.
+                Built-in rules have names ``'Rxxx'`` where ``x`` is a digit
+            pattern (.Pattern): A pattern constructed by :func:`.pattern_head`
+                to match a :class:`.ProtoExpr`
+            replacement (callable): callable that takes the wildcard names
+                defined in `pattern` as keyword arguments and returns an
+                evaluated expression.
+            attr (None or str): Name of the class attribute to which to add the
+                rule. If None, one of ``'_rules'``, ``'_binary_rules'`` is
+                automatically chosen
+
+        Raises:
+            TypeError: if `name` is not a :class:`str` or `pattern` is not a
+                :class:`.Pattern` instance
+            ValueError: if `pattern` is not set up to match a
+                :class:`.ProtoExpr`; if there there is already a rule with the
+                same `name`; if `replacement` is not a callable or does not
+                take all the wildcard names in `pattern` as arguments
+            AttributeError: If invalid `attr`
+
+        Note:
+            The "automatic" rules added by this method are applied *before*
+            expressions are instantiated (against a corresponding
+            :class:`.ProtoExpr`). In contrast,
+            :meth:`apply_rules`/:meth:`apply_rule` are applied to fully
+            instantiated objects.
+
+            The :func:`.temporary_rules` context manager may be used to create
+            a context in which rules may be defined locally.
+        """
+        from qnet.utils.check_rules import check_rules_dict
+        if attr is None:
+            attr = cls._rules_attr()
+        if name in getattr(cls, attr):
+            raise ValueError(
+                "Duplicate key '%s': rule already exists" % name)
+        getattr(cls, attr).update(check_rules_dict(
+            [(name, (pattern, replacement))]))
+
+    @classmethod
+    def show_rules(cls, *names, attr=None):
+        """Print algebraic rules used by :class:`create`
+
+        Print a summary of the algebraic rules with the given names, or all
+        rules if not names a given.
+
+        Args:
+            names (str): Names of rules to show
+            attr (None or str): Name of the class attribute from which to get
+                the rules. Cf. :meth:`add_rule`.
+
+        Raises:
+            AttributeError: If invalid `attr`
+        """
+        from qnet.printing import srepr
+        try:
+            if attr is None:
+                attr = cls._rules_attr()
+            rules = getattr(cls, attr)
+        except TypeError:
+            rules = {}
+        for (name, rule) in rules.items():
+            if len(names) > 0 and name not in names:
+                continue
+            pat, repl = rule
+            print(name)
+            print("    PATTERN:")
+            print(textwrap.indent(
+                textwrap.dedent(srepr(pat, indented=True)),
+                prefix=" "*8))
+            print("    REPLACEMENT:")
+            print(textwrap.indent(
+                textwrap.dedent(inspect.getsource(repl).rstrip()),
+                prefix=" "*8))
+
+    @classmethod
+    def del_rules(cls, *names, attr=None):
+        """Delete algebraic rules used by :meth:`create`
+
+        Remove the rules with the given `names`, or all rules if no names are
+        given
+
+        Args:
+            names (str): Names of rules to delete
+            attr (None or str): Name of the class attribute from which to
+                delete the rules. Cf. :meth:`add_rule`.
+
+        Raises:
+            KeyError: If any rules in `names` does not exist
+            AttributeError: If invalid `attr`
+        """
+        if attr is None:
+            attr = cls._rules_attr()
+        if len(names) == 0:
+            getattr(cls, attr)  # raise AttributeError if wrong attr
+            setattr(cls, attr, OrderedDict())
+        else:
+            for name in names:
+                del getattr(cls, attr)[name]
+
+    @classmethod
+    def rules(cls, attr=None):
+        """Iterable of rule names used by :meth:`create`
+
+        Args:
+            attr (None or str): Name of the class attribute to which to get the
+                names. If None, one of ``'_rules'``, ``'_binary_rules'`` is
+                automatically chosen
+        """
+        try:
+            if attr is None:
+                attr = cls._rules_attr()
+            return getattr(cls, attr).keys()
+        except TypeError:
+            return ()
 
     @property
     @abstractmethod
@@ -217,12 +385,14 @@ class Expression(metaclass=ABCMeta):
         return str(self)
 
     def substitute(self, var_map):
-        """Substitute all_symbols for other expressions.
+        """Substitute sub-expressions
 
         Args:
             var_map (dict): Dictionary with entries of the form
                 ``{expr: substitution}``
         """
+        if self in var_map:
+            return var_map[self]
         return self._substitute(var_map)
 
     def _substitute(self, var_map, safe=False):
@@ -248,35 +418,195 @@ class Expression(metaclass=ABCMeta):
         else:
             return self.create(*new_args, **new_kwargs)
 
-    def simplify(self, rules=None):
-        """Recursively re-instantiate the expression, while applying all of the
-        given `rules` to all encountered (sub-) expressions
+    def doit(self, classes=None, recursive=True, **kwargs):
+        """Rewrite (sub-)expressions in a more explicit form
+
+        Return a modified expression that is more explicit than the original
+        expression. The definition of "more explicit" is decided by the
+        relevant subclass, e.g. a :meth:`Commutator <.Commutator.doit>` is
+        written out according to its definition.
+
+        Args:
+            classes (None or list): an optional list of classes. If given,
+                only (sub-)expressions that an instance of one of the classes
+                in the list will be rewritten.
+            recursive (bool): If True, also rewrite any sub-expressions of any
+                rewritten expression. Note that :meth:`doit` always recurses
+                into sub-expressions of expressions not affected by it.
+            kwargs: Any remaining keyword arguments may be used by the
+                :meth:`doit` method of a particular expression.
+
+        Example:
+
+            Consider the following expression::
+
+                >>> from sympy import IndexedBase
+                >>> i = IdxSym('i'); N = symbols('N')
+                >>> Asym, Csym = symbols('A, C', cls=IndexedBase)
+                >>> A = lambda i: OperatorSymbol(StrLabel(Asym[i]), hs=0)
+                >>> B = OperatorSymbol('B', hs=0)
+                >>> C = lambda i: OperatorSymbol(StrLabel(Csym[i]), hs=0)
+                >>> def show(expr):
+                ...     print(unicode(expr, show_hs_label=False))
+                >>> expr = Sum(i, 1, 3)(Commutator(A(i), B) + C(i)) / N
+                >>> show(expr)
+                1/N (∑_{i=1}^{3} (Ĉ_i + [Â_i, B̂]))
+
+            Calling :meth:`doit` without parameters rewrites both the indexed
+            sum and the commutator::
+
+                >>> show(expr.doit())
+                1/N (Ĉ₁ + Ĉ₂ + Ĉ₃ + Â₁ B̂ + Â₂ B̂ + Â₃ B̂ - B̂ Â₁ - B̂ Â₂ - B̂ Â₃)
+
+            A non-recursive call only expands the sum, as it does not recurse
+            into the expanded summands::
+
+                >>> show(expr.doit(recursive=False))
+                1/N (Ĉ₁ + Ĉ₂ + Ĉ₃ + [Â₁, B̂] + [Â₂, B̂] + [Â₃, B̂])
+
+            We can selectively expand only the sum or only the commutator::
+
+                >>> show(expr.doit(classes=[IndexedSum]))
+                1/N (Ĉ₁ + Ĉ₂ + Ĉ₃ + [Â₁, B̂] + [Â₂, B̂] + [Â₃, B̂])
+
+                >>> show(expr.doit(classes=[Commutator]))
+                1/N (∑_{i=1}^{3} (Ĉ_i - B̂ Â_i + Â_i B̂))
+
+            Also we can pass a keyword argument that expands the sum only to
+            the 2nd term, as documented in :meth:`.Commutator.doit`
+
+                >>> show(expr.doit(classes=[IndexedSum], max_terms=2))
+                1/N (Ĉ₁ + Ĉ₂ + [Â₁, B̂] + [Â₂, B̂])
+        """
+        in_classes = (
+            (classes is None) or
+            any([isinstance(self, cls) for cls in classes]))
+        if in_classes:
+            new = self._doit(**kwargs)
+        else:
+            new = self
+        if (new == self) or recursive:
+            new_args = []
+            for arg in new.args:
+                if isinstance(arg, Expression):
+                    new_args.append(arg.doit(
+                        classes=classes, recursive=recursive, **kwargs))
+                else:
+                    new_args.append(arg)
+            new_kwargs = OrderedDict([])
+            for (key, val) in new.kwargs.items():
+                if isinstance(val, Expression):
+                    new_kwargs[key] = val.doit(
+                        classes=classes, recursive=recursive, **kwargs)
+                else:
+                    new_kwargs[key] = val
+            new = new.__class__.create(*new_args, **new_kwargs)
+            if new != self and recursive:
+                new = new.doit(classes=classes, recursive=True, **kwargs)
+        return new
+
+    def _doit(self, **kwargs):
+        """Non-recursively rewrite expression in a more explicit form"""
+        # Any subclass that overrides :meth:`_doit` should also override
+        # :meth:`doit` with a stub (calling ``super().doit`` only), but
+        # also provide the documentation for :meth:`_doit` (since :meth:`_doit`
+        # won't be rendered by Sphinx)
+        return self
+
+    def apply(self, func, *args, **kwargs):
+        """Apply `func` to expression.
+
+        Equivalent to ``func(self, *args, **kwargs)``. This method exists for
+        easy chaining::
+
+            >>> A, B, C, D = (
+            ...     OperatorSymbol(s, hs=1) for s in ('A', 'B', 'C', 'D'))
+            >>> expr = (
+            ...     Commutator(A * B, C * D)
+            ...     .apply(lambda expr: expr**2)
+            ...     .apply(expand_commutators_leibniz, expand_expr=False)
+            ...     .substitute({A: IdentityOperator}))
+        """
+        return func(self, *args, **kwargs)
+
+    def apply_rules(self, rules, recursive=True):
+        """Rebuild the expression while applying a list of rules
+
+        The rules are applied against the instantiated expression, and any
+        sub-expressions if `recursive` is True. Rule application is best though
+        of as a pattern-based substitution. This is different from the
+        *automatic* rules that :meth:`create` uses (see :meth:`add_rule`),
+        which are applied *before* expressions are instantiated.
 
         Args:
             rules (list or ~collections.OrderedDict): List of rules or
                 dictionary mapping names to rules, where each rule is a tuple
-                (Pattern, replacement callable)
+                (:class:`Pattern`, replacement callable), cf.
+                :meth:`apply_rule`
+            recursive (bool): If true (default), apply rules to all arguments
+                and keyword arguments of the expression. Otherwise, only the
+                expression itself will be re-instantiated.
+
+        If `rules` is a dictionary, the keys (rules names) are used only for
+        debug logging, to allow an analysis of which rules lead to the final
+        form of an expression.
         """
-        if rules is None:
-            rules = {}
-        new_args = [simplify(arg, rules) for arg in self.args]
-        new_kwargs = {key: simplify(val, rules)
-                      for (key, val) in self.kwargs.items()}
+        if recursive:
+            new_args = [_apply_rules(arg, rules) for arg in self.args]
+            new_kwargs = {
+                key: _apply_rules(val, rules)
+                for (key, val) in self.kwargs.items()}
+        else:
+            new_args = self.args
+            new_kwargs = self.kwargs
         simplified = self.create(*new_args, **new_kwargs)
-        try:
-            # `rules` is an OrderedDict key => (pattern, replacement)
-            items = rules.items()
-        except AttributeError:
-            # `rules` is a list of (pattern, replacement) tuples
-            items = enumerate(rules)
-        for key, (pat, replacement) in items:
-            matched = pat.match(simplified)
-            if matched:
-                try:
-                    return replacement(**matched)
-                except CannotSimplify:
-                    pass
-        return simplified
+        return _apply_rules_no_recurse(simplified, rules)
+
+    def apply_rule(self, pattern, replacement, recursive=True):
+        """Apply a single rules to the expression
+
+        This is equivalent to :meth:`apply_rules` with
+        ``rules=[(pattern, replacement)]``
+
+        Args:
+            pattern (.Pattern): A pattern containing one or more wildcards
+            replacement (callable): A callable that takes the wildcard names in
+                `pattern` as keyword arguments, and returns a replacement for
+                any expression that `pattern` matches.
+
+        Example:
+            Consider the following Heisenberg Hamiltonian::
+
+                >>> tls = SpinSpace(label='s', spin='1/2')
+                >>> i, j, n = symbols('i, j, n', cls=IdxSym)
+                >>> J = symbols('J', cls=sympy.IndexedBase)
+                >>> def Sig(i):
+                ...     return OperatorSymbol(
+                ...         StrLabel(sympy.Indexed('sigma', i)), hs=tls)
+                >>> H = - Sum(i, tls)(Sum(j, tls)(
+                ...     J[i, j] * Sig(i) * Sig(j)))
+                >>> unicode(H)
+                '- (∑_{i,j ∈ ℌₛ} J_ij σ̂_i^(s) σ̂_j^(s))'
+
+            We can transform this into a classical Hamiltonian by replacing the
+            operators with scalars::
+
+                >>> H_classical = H.apply_rule(
+                ...     pattern(OperatorSymbol, wc('label', head=StrLabel)),
+                ...     lambda label: label.expr * IdentityOperator)
+                >>> unicode(H_classical)
+                '- (∑_{i,j ∈ ℌₛ} J_ij σ_i σ_j)'
+        """
+        return self.apply_rules([(pattern, replacement)], recursive=recursive)
+
+    def rebuild(self):
+        """Recursively re-instantiate the expression
+
+        This is generally used within a managed context such as
+        :func:`.extra_rules`, :func:`.extra_binary_rules`, or
+        :func:`.no_rules`.
+        """
+        return self.apply_rules(rules={})
 
     def _repr_latex_(self):
         """For compatibility with the IPython notebook, generate TeX expression
@@ -295,9 +625,38 @@ class Expression(metaclass=ABCMeta):
         # it fail explicitly
         raise SympifyError("QNET expressions cannot be converted to SymPy")
 
+    @property
+    def free_symbols(self):
+        """Set of free SymPy symbols contained within the expression."""
+        if self._free_symbols is None:
+            res = set.union(
+                set([]), # dummy arg (union fails without arguments)
+                *[_free_symbols(val) for val in self.kwargs.values()])
+            res.update(
+                set([]), # dummy arg (update fails without arguments)
+                *[_free_symbols(arg) for arg in self.args])
+            self._free_symbols = res
+        return self._free_symbols
+
+    @property
+    def bound_symbols(self):
+        """Set of bound SymPy symbols in the expression"""
+        if self._bound_symbols is None:
+            res = set.union(
+                set([]), # dummy arg (union fails without arguments)
+                *[_bound_symbols(val) for val in self.kwargs.values()])
+            res.update(
+                set([]), # dummy arg (update fails without arguments)
+                *[_bound_symbols(arg) for arg in self.args])
+            self._bound_symbols = res
+        return self._bound_symbols
+
+    @property
     def all_symbols(self):
-        """Set of all_symbols contained within the expression."""
-        return set.union(*[all_symbols(op) for op in self.args])
+        """Combination of :attr:`free_symbols` and :attr:`bound_symbols`"""
+        if self._all_symbols is None:
+            self._all_symbols = self.free_symbols | self.bound_symbols
+        return self._all_symbols
 
     def __ne__(self, other):
         """If it is well-defined (i.e. boolean), simply return
@@ -308,33 +667,6 @@ class Expression(metaclass=ABCMeta):
         if type(eq) is bool:
             return not eq
         return NotImplemented
-
-
-def _str_instance_key(key):
-    """Format the key (Expression_instance_key result) as a slightly more
-    readable string corresponding to the "create" call.
-    """
-    args_str = ", ".join([str(arg) for arg in key[1]])
-    kw_str = ''
-    if len(key[2]) > 0:
-        kw_str = ', ' + ", ".join(["%s=%s" % (k, v) for (k, v) in key[2]])
-    return key[0].__name__ + ".create(" + args_str + kw_str + ')'
-
-
-def _print_debug_cache(prefix, color, key, instance, level=0):
-    """Routine that can be useful for debugging the Expression instance cache,
-    e.g.
-
-        _print_debug_cache('HIT', 'green', key, cls._instances[key])
-        _print_debug_cache('store.b', 'red', key, simplified)
-    """
-    # noinspection PyPackageRequirements
-    import click
-    msg = (click.style("%s: %17x" % (prefix, hash(key)), fg=color) +
-           " " + _str_instance_key(key) +
-           click.style(" -> %s" % hash(instance), fg=color) +
-           " %s" % str(instance))
-    click.echo("  " * (level + 1) + msg)
 
 
 def substitute(expr, var_map):
@@ -359,10 +691,8 @@ def substitute(expr, var_map):
         return expr
 
 
-def _simplify_expr(expr, rules=None):
+def _apply_rules_no_recurse(expr, rules):
     """Non-recursively match expr again all rules"""
-    if rules is None:
-        rules = {}
     try:
         # `rules` is an OrderedDict key => (pattern, replacement)
         items = rules.items()
@@ -379,7 +709,7 @@ def _simplify_expr(expr, rules=None):
     return expr
 
 
-def simplify(expr, rules=None):
+def _apply_rules(expr, rules):
     """Recursively re-instantiate the expression, while applying all of the
     given `rules` to all encountered (sub-) expressions
 
@@ -407,9 +737,7 @@ def simplify(expr, rules=None):
         expressions.
     """
     if LOG:
-        logger = logging.getLogger(__name__ + '.simplify')
-    if rules is None:
-        rules = {}
+        logger = logging.getLogger('QNET.create')
     stack = []
     path = []
     if isinstance(expr, Expression):
@@ -430,7 +758,7 @@ def simplify(expr, rules=None):
                 # done at this level
                 path.pop()
                 expr = stack.pop().instantiate()
-                expr = _simplify_expr(expr, rules)
+                expr = _apply_rules_no_recurse(expr, rules)
                 if len(stack) == 0:
                     if LOG:
                         logger.debug(
@@ -452,86 +780,35 @@ def simplify(expr, rules=None):
                     if LOG:
                         logger.debug("   placing arg on stack")
                 else:  # scalar
-                    stack[-1][i] = _simplify_expr(arg, rules)
+                    stack[-1][i] = _apply_rules_no_recurse(arg, rules)
                     if LOG:
                         logger.debug(
                             "   arg is leaf, replacing with simplified expr: "
                             "%s", stack[-1][i])
                     path[-1] += 1
     else:
-        return _simplify_expr(expr, rules)
+        return _apply_rules_no_recurse(expr, rules)
 
 
-def simplify_by_method(expr, *method_names, head=None, **kwargs):
-    """Simplify `expr` by calling all of the given methods on it, if possible.
-
-    Args:
-        expr: The expression to simplify
-        method_names: One or more method names. Any subexpression that has a
-            method with any of the `method_names` will be replaced by the
-            result of calling the method.
-        head (None or type or list): An optional list of classes to which the
-            simplification should be restricted
-        kwargs: keyword arguments to be passed to all methods
-
-    Note:
-        If giving multiple `method_names`, all the methods must take all of the
-        `kwargs`
-    """
-
-    method_names_set = set(method_names)
-
-    def has_any_wanted_method(expr):
-        return len(method_names_set.intersection(dir(expr))) > 0
-
-    def apply_methods(expr, method_names, **kwargs):
-        for mtd in method_names:
-            if hasattr(expr, mtd):
-                try:
-                    expr = getattr(expr, mtd)(**kwargs)
-                except TypeError:
-                    # mtd turns out to not actually be a method (not callable)
-                    pass
-        return expr
-
-    pat = pattern(head=head, wc_name='X', conditions=(has_any_wanted_method, ))
-
-    return simplify(
-        expr, [(pat, lambda X: apply_methods(X, method_names, **kwargs))])
-
-
-def all_symbols(expr):
-    """Return all (free) symbols featured within an expression."""
-    # TODO: consider renaming this to free_symbols property, for consistency
-    # with SymPy
-    methods = [
-        lambda expr: expr.all_symbols(),  # QNET
-        lambda expr: expr.free_symbols,   # SymPy
-        lambda expr: set(())]             # non-symbolic
-
-    for method in methods:
-        try:
-            return method(expr)
-        except AttributeError:
-            pass  # try next method
-
-
-def _scalar_free_symbols(*operands):
-    """Return all free symbols from any symbolic operand"""
-    if len(operands) > 1:
-        return set.union(*[_scalar_free_symbols(o) for o in operands])
-    elif len(operands) < 1:
+def _free_symbols(expr):
+    try:
+        return expr.free_symbols
+    except AttributeError:
         return set()
-    else:  # len(operands) == 1
-        o, = operands
-        if isinstance(o, SympyBasic):
-            return set(o.free_symbols)
-    return set()
+
+
+def _bound_symbols(expr):
+    try:
+        return expr.bound_symbols
+    except AttributeError:
+        return set()
 
 
 class Operation(Expression, metaclass=ABCMeta):
-    """Base class for all "operations", i.e. Expressions that act algebraically
-    on other expressions (their "operands").
+    """Base class for "operations"
+
+    Operations are Expressions that act algebraically on other expressions
+    (their "operands").
 
     Operations differ from more general Expressions by the convention that the
     arguments of the Operator are exactly the operands (which must be members

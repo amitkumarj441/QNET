@@ -1,8 +1,8 @@
 """Test hash and equality implementation of Expressions"""
 
-from qnet.algebra.core.operator_algebra import Destroy
-from qnet.algebra.core.hilbert_space_algebra import LocalSpace
 from qnet.algebra.core.circuit_algebra import SLH
+from qnet.algebra.library.fock_operators import Destroy
+from qnet.algebra.core.hilbert_space_algebra import LocalSpace
 
 
 def test_equal_hash():
@@ -30,7 +30,7 @@ def test_heis_eom():
     expressions with the same hash are considered equal"""
     import sympy as sp
     a = Destroy(hs="0")
-    assert a-a == 0 != a-2*a
+    assert (a-a).is_zero; (a-a) != a-2*a
     heis_eom = SLH([[1]], [sp.sqrt(2)*a], 0).symbolic_heisenberg_eom(a)
     assert heis_eom == -a != -2*a
 

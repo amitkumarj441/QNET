@@ -3,6 +3,7 @@
 
 """The setup script."""
 
+import os
 from setuptools import setup, find_packages
 
 
@@ -24,16 +25,16 @@ try:
 except OSError:
     history = ''
 
-requirements = ['sympy', 'scipy', 'numpy', 'attrs']
+requirements = ['sympy<1.2', 'scipy', 'numpy', 'attrs', 'uniseg']
 
 dev_requirements = [
-    'coverage', 'pytest', 'pytest-cov', 'pytest-xdist', 'twine', 'pep8',
+    'coverage', 'coveralls', 'pytest', 'pytest-cov', 'pytest-xdist', 'twine', 'pep8',
     'flake8', 'wheel', 'sphinx', 'sphinx-autobuild', 'sphinx_rtd_theme',
-    'sphinx-autodoc-typehints']
-dev_requirements.append('better-apidoc>=0.1.4')
+    'sphinx-autodoc-typehints', 'ipython']
+dev_requirements.append('better-apidoc>=0.2.0')
 
 
-version = get_version('./src/qnet/__init__.py')
+version = get_version(os.path.join('.', 'src', 'qnet', '__init__.py'))
 
 setup(
     name='QNET',

@@ -2,9 +2,7 @@
 
 from abc import ABCMeta
 
-import attr
-
-from .abstract_algebra import Operation, all_symbols
+from .abstract_algebra import Expression, Operation
 from .exceptions import InfiniteSumError
 from ..pattern_matching import wc
 from ...utils.indices import (
@@ -14,7 +12,7 @@ __all__ = ["IndexedSum"]
 
 
 class IndexedSum(Operation, metaclass=ABCMeta):
-    # TODO: documentation
+    """Base class for indexed sums"""
 
     _expanded_cls = None  # must be set by subclasses
     _expand_limit = 1000
@@ -48,14 +46,26 @@ class IndexedSum(Operation, metaclass=ABCMeta):
 
     @property
     def variables(self):
-        """List of the dummy (index) variable symbols"""
+        """List of the dummy (index) variable symbols
+
+        See also :property:`bound_symbols` for a set of the same symbols
+        """
         return [r.index_symbol for r in self.ranges]
 
-    def all_symbols(self):
+    @property
+    def bound_symbols(self):
+        """Set of bound variables, i.e. the index variable symbols
+
+        See also :property:`variables` for an ordered list of the same symbols
+        """
+        return set(self.variables)
+
+    @property
+    def free_symbols(self):
         """Set of all free symbols"""
-        return set(
-            [sym for sym in all_symbols(self.term)
-                if sym not in self.variables])
+        return set([
+            sym for sym in self.term.free_symbols
+            if sym not in self.bound_symbols])
 
     @property
     def kwargs(self):
@@ -63,10 +73,19 @@ class IndexedSum(Operation, metaclass=ABCMeta):
 
     @property
     def terms(self):
+        """Iterator over the terms of the sum
+
+        Yield from the (possibly) infinite list of terms of the indexed sum, if
+        the sum was written out explicitly. Each yielded term in an instance of
+        :class:`.Expression`
+        """
+        from qnet.algebra.core.scalar_algebra import ScalarValue
         for mapping in yield_from_ranges(self.ranges):
-            yield self.term.substitute(mapping).simplify(rules=[(
-                wc('label', head=SymbolicLabelBase),
-                lambda label: label.evaluate(mapping))])
+            term = self.term.substitute(mapping)
+            if isinstance(term, ScalarValue._val_types):
+                term = ScalarValue.create(term)
+            assert isinstance(term, Expression)
+            yield term
 
     def __len__(self):
         length = 1
@@ -78,7 +97,35 @@ class IndexedSum(Operation, metaclass=ABCMeta):
                     "Cannot determine length from non-finite ranges")
         return length
 
-    def doit(self, indices=None, max_terms=None):
+    def doit(
+            self, classes=None, recursive=True, indices=None, max_terms=None,
+            **kwargs):
+        """Write out the indexed sum explicitly
+
+        If `classes` is None or :class:`IndexedSum` is in `classes`,
+        (partially) write out the indexed sum in to an explicit sum of terms.
+        If `recursive` is True, write out each of the new sum's summands by
+        calling its :meth:`doit` method.
+
+        Args:
+            classes (None or list): see :meth:`.Expression.doit`
+            recursive (bool): see :meth:`.Expression.doit`
+            indices (list): List of :class:`IdxSym` indices for which the sum
+                should be expanded. If `indices` is a subset of the indices
+                over which the sum runs, it will be partially expanded. If not
+                given, expand the sum completely
+            max_terms (int): Number of terms after which to truncate the sum.
+                This is particularly useful for infinite sums. If not given,
+                expand all terms of the sum. Cannot be combined with `indices`
+            kwargs: keyword arguments for recursive calls to
+                :meth:`doit`. See :meth:`.Expression.doit`
+        """
+        return super().doit(
+            classes, recursive, indices=indices, max_terms=max_terms, **kwargs)
+
+    def _doit(self, **kwargs):
+        indices = kwargs.get('indices', None)
+        max_terms = kwargs.get('max_terms', None)
         if indices is None:
             return self._doit_full(max_terms=max_terms)
         else:
@@ -125,8 +172,7 @@ class IndexedSum(Operation, metaclass=ABCMeta):
             else:
                 other_ranges.append(index_range)
         if selected_range is None:
-            raise ValueError(
-                "Index %s does not appear in %s" % (ind_sym, self))
+            return self
         res_term = None
         for i, mapping in enumerate(selected_range.iter()):
             res_summand = self.term.substitute(mapping)
@@ -139,9 +185,7 @@ class IndexedSum(Operation, metaclass=ABCMeta):
                     "Cannot expand %s: more than %s terms"
                     % (self, self._expand_limit))
         if len(other_ranges) == 0:
-            res = res_term.simplify(rules=[(
-                wc('label', head=SymbolicLabelBase),
-                lambda label: label.evaluate(mapping))])
+            res = res_term
         else:
             res = self.__class__.create(res_term, *other_ranges)
             res = res._doit_over_indices(indices=indices)
@@ -151,14 +195,20 @@ class IndexedSum(Operation, metaclass=ABCMeta):
         """Return a copy with modified indices to ensure disjunct indices with
         `others`.
 
+        Each element in `others` may be an index symbol (:class:`.IdxSym`),
+        a index-range object (:class:`.IndexRangeBase`) or list of index-range
+        objects, or an indexed operation (something with a ``ranges`` attribute)
+
         Each index symbol is primed until it does not match any index symbol in
-        `others`
+        `others`.
         """
         new = self
         other_index_symbols = set()
         for other in others:
             try:
-                if isinstance(other, IndexRangeBase):
+                if isinstance(other, IdxSym):
+                    other_index_symbols.add(other)
+                elif isinstance(other, IndexRangeBase):
                     other_index_symbols.add(other.index_symbol)
                 elif hasattr(other, 'ranges'):
                     other_index_symbols.update(
@@ -168,15 +218,19 @@ class IndexedSum(Operation, metaclass=ABCMeta):
                         [r.index_symbol for r in other])
             except AttributeError:
                 raise ValueError(
-                    "Each element of other must be an an instance of "
-                    "IndexRangeBase, and object with a `ranges` attribute "
+                    "Each element of other must be an an instance of IdxSym, "
+                    "IndexRangeBase, an object with a `ranges` attribute "
                     "with a list of IndexRangeBase instances, or a list of"
-                    "IndexRangeBase objects directly")
+                    "IndexRangeBase objects.")
         for r in self.ranges:
             index_symbol = r.index_symbol
+            modified = False
             while index_symbol in other_index_symbols:
+                modified = True
                 index_symbol = index_symbol.incr_primed()
-            new = new._substitute({r.index_symbol: index_symbol}, safe=True)
+            if modified:
+                new = new._substitute(
+                    {r.index_symbol: index_symbol}, safe=True)
         return new
 
     def __mul__(self, other):

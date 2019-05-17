@@ -22,9 +22,17 @@ sys.path.insert(0, os.path.abspath('_extensions'))
 def run_apidoc(_):
     """Generage API documentation"""
     import better_apidoc
-    better_apidoc.main(
-        ['better-apidoc', '-t', './_templates', '--force', '--no-toc',
-         '--separate', '-o', './API', '../src/qnet'])
+    better_apidoc.main([
+        'better-apidoc',
+        '-t',
+        os.path.join('.', '_templates'),
+        '--force',
+        '--no-toc',
+        '--separate',
+        '-o',
+        os.path.join('.', 'API'),
+        os.path.join('..', 'src', 'qnet'),
+    ])
 
 
 # -- General configuration -----------------------------------------------------
@@ -58,7 +66,8 @@ intersphinx_mapping = {
     'python': ('https://docs.python.org/3.6', None),
     'sympy': ('http://docs.sympy.org/latest/', None),
     'numpy': ('https://docs.scipy.org/doc/numpy/', None),
-    'matplotlib': ('https://matplotlib.org/', None)
+    'matplotlib': ('https://matplotlib.org/', None),
+    'qutip': ('http://qutip.org/docs/latest/', None),
 }
 
 # Add any paths that contain templates here, relative to this directory.
@@ -89,6 +98,54 @@ html_sidebars = {
    '**': ['searchbox.html', 'globaltoc.html', 'sourcelink.html'],
 }
 html_short_title = '%s-%s' % (project, version)
+
+# Mathjax settings
+mathjax_path = 'https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.5/latest.js'
+mathjax_config = {
+    'extensions': [
+        'tex2jax.js', 'AMSmath.js', 'AMSsymbols.js', 'noErrors.js',
+        'noUndefined.js'],
+    'jax': ['input/TeX', 'output/SVG'],
+    'TeX': {
+        'Macros': {
+            'tr': ['{\\operatorname{tr}}', 0],
+            'Tr': ['{\\operatorname{tr}}', 0],
+            'diag': ['{\\operatorname{diag}}', 0],
+            'abs': ['{\\operatorname{abs}}', 0],
+            'pop': ['{\\operatorname{pop}}', 0],
+            'SLH': ['{\\operatorname{SLH}}', 0],
+            'aux': ['{\\text{aux}}', 0],
+            'opt': ['{\\text{opt}}', 0],
+            'tgt': ['{\\text{tgt}}', 0],
+            'init': ['{\\text{init}}', 0],
+            'lab': ['{\\text{lab}}', 0],
+            'rwa': ['{\\text{rwa}}', 0],
+            'fwhm': ['{\\text{fwhm}}', 0],
+            'bra': ['{\\langle#1\\vert}', 1],
+            'ket': ['{\\vert#1\\rangle}', 1],
+            'Bra': ['{\\left\\langle#1\\right\\vert}', 1],
+            'Braket': ['{\\left\\langle #1\\vphantom{#2} \\mid #2\\vphantom{#1}\\right\\rangle}', 2],
+            'Ket': ['{\\left\\vert#1\\right\\rangle}', 1],
+            'mat': ['{\\mathbf{#1}}', 1],
+            'op': ['{\\hat{#1}}', 1],
+            'Op': ['{\\hat{#1}}', 1],
+            'dd': ['{\\,\\text{d}}', 0],
+            'daggered': ['{^{\\dagger}}', 0],
+            'transposed': ['{^{\\text{T}}}', 0],
+            'Liouville': ['{\\mathcal{L}}', 0],
+            'DynMap': ['{\\mathcal{E}}', 0],
+            'identity': ['{\\mathbf{1}}', 0],
+            'Norm': ['{\\lVert#1\\rVert}', 1],
+            'Abs': ['{\\left\\vert#1\\right\\vert}', 1],
+            'avg': ['{\\langle#1\\rangle}', 1],
+            'Avg': ['{\\left\langle#1\\right\\rangle}', 1],
+            'AbsSq': ['{\\left\\vert#1\\right\\vert^2}', 1],
+            'Re': ['{\\operatorname{Re}}', 0],
+            'Im': ['{\\operatorname{Im}}', 0],
+        }
+    }
+}
+
 
 # Napoleon settings
 napoleon_google_docstring = True
@@ -178,7 +235,6 @@ if not on_rtd:  # only import and set the theme if we're building docs locally
 html_theme_options = {
     'collapse_navigation': True,
     'display_version': True,
-    'navigation_depth': 3,
 }
 
 inheritance_graph_attrs = dict(size='""')

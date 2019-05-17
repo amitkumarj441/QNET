@@ -1,14 +1,14 @@
 from collections.__init__ import OrderedDict
 from functools import partial
 
-from ..core.abstract_algebra import simplify
+from ..core.abstract_algebra import _apply_rules
 from ..core.operator_algebra import (
     Operator, OperatorTimes,
     Commutator, )
 from ..pattern_matching import wc, pattern
 
 
-__all__ = ['expand_commutators_leibniz', 'evaluate_commutators']
+__all__ = ['expand_commutators_leibniz']
 
 
 def expand_commutators_leibniz(expr, expand_expr=True):
@@ -34,7 +34,7 @@ def expand_commutators_leibniz(expr, expand_expr=True):
     def leibniz_right(A, BC):
         """[A, BC] -> [A, B] C + B [A, C]"""
         B = BC.operands[0]
-        C = OperatorTimes(*BC.operands[1:])
+        C = OperatorTimes.create(*BC.operands[1:])
         return Commutator.create(A, B) * C + B * Commutator.create(A, C)
 
     def leibniz_left(AB, C):
@@ -52,23 +52,7 @@ def expand_commutators_leibniz(expr, expand_expr=True):
             lambda AB, C: recurse(leibniz_left(AB, C).expand())))])
 
     if expand_expr:
-        res = simplify(expr.expand(), rules).expand()
+        res = _apply_rules(expr.expand(), rules).expand()
     else:
-        res = simplify(expr, rules)
+        res = _apply_rules(expr, rules)
     return res
-
-
-def evaluate_commutators(expr):
-    """Evaluate all commutators in `expr`.
-
-    All commutators are evaluated as the explicit formula
-
-    .. math::
-
-        [A, B] = A B - B A
-
-    """
-    A = wc('A', head=Operator)
-    B = wc('B', head=Operator)
-    return simplify(
-        expr, [(pattern(Commutator, A, B), lambda A, B: A*B - B*A)])

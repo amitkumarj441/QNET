@@ -7,23 +7,25 @@ from sympy.utilities.lambdify import lambdify
 from scipy.sparse import csr_matrix
 from numpy import (
     diag as np_diag, arange, cos as np_cos, sin as np_sin)
-from qnet.algebra.core.scalar_types import SCALAR_TYPES
-from qnet.algebra.core.exceptions import AlgebraError
-from qnet.algebra.core.circuit_algebra import SLH, move_drive_to_H
-from qnet.algebra.core.abstract_algebra import Operation
-from qnet.algebra.core.operator_algebra import (
-        Operator, IdentityOperator, ZeroOperator, LocalOperator, Create,
-        Destroy, Jz, Jplus, Jminus, Phase, Displace, Squeeze, LocalSigma,
-        OperatorPlus, OperatorTimes, ScalarTimesOperator,
-        Adjoint, PseudoInverse, OperatorTrace, NullSpaceProjector)
-from qnet.algebra.core.state_algebra import (
-        State, BraKet, KetBra, BasisKet, CoherentStateKet, KetPlus, TensorKet,
-        ScalarTimesKet, OperatorTimesKet)
-from qnet.algebra.core.hilbert_space_algebra import TrivialSpace
-from qnet.algebra.core.super_operator_algebra import (
-        SuperOperator, IdentitySuperOperator, SuperOperatorPlus,
-        SuperOperatorTimes, ScalarTimesSuperOperator, SPre, SPost,
-        SuperOperatorTimesOperator, ZeroSuperOperator)
+from ..algebra.core.scalar_algebra import ScalarValue, is_scalar
+from ..algebra.core.exceptions import AlgebraError
+from ..algebra.core.circuit_algebra import SLH, move_drive_to_H
+from ..algebra.core.abstract_algebra import Operation
+from ..algebra.core.operator_algebra import (
+    Operator, IdentityOperator, ZeroOperator, LocalOperator, LocalSigma,
+    OperatorPlus, OperatorTimes, ScalarTimesOperator,
+    Adjoint, PseudoInverse, OperatorTrace, NullSpaceProjector)
+from ..algebra.library.spin_algebra import Jz, Jplus, Jminus
+from ..algebra.library.fock_operators import (
+    Destroy, Create, Phase, Displace, Squeeze)
+from ..algebra.core.state_algebra import (
+    State, BraKet, KetBra, BasisKet, CoherentStateKet, KetPlus, TensorKet,
+    ScalarTimesKet, OperatorTimesKet)
+from ..algebra.core.hilbert_space_algebra import TrivialSpace
+from ..algebra.core.super_operator_algebra import (
+    SuperOperator, IdentitySuperOperator, SuperOperatorPlus,
+    SuperOperatorTimes, ScalarTimesSuperOperator, SPre, SPost,
+    SuperOperatorTimesOperator, ZeroSuperOperator)
 
 try:
     import qutip
@@ -158,7 +160,7 @@ def SLH_to_qutip(slh, full_space=None, time_symbol=None,
         H = convert_to_qutip(slh.H, full_space=full_space)
         Ls = []
         for L in slh.Ls:
-            if isinstance(L, SCALAR_TYPES):
+            if is_scalar(L):
                 L = L * IdentityOperator
             L_qutip = convert_to_qutip(L, full_space=full_space)
             if L_qutip.norm('max') > 0:
@@ -168,7 +170,7 @@ def SLH_to_qutip(slh, full_space=None, time_symbol=None,
                                      convert_as)
         Ls = []
         for L in slh.Ls:
-            if isinstance(L, SCALAR_TYPES):
+            if is_scalar(L):
                 L = L * IdentityOperator
             L_qutip = _time_dependent_to_qutip(L, full_space, time_symbol,
                                                convert_as)
@@ -414,25 +416,27 @@ def _time_dependent_to_qutip(
     structure required by QuTiP"""
     if full_space is None:
         full_space = op.space
-    if time_symbol in op.all_symbols():
+    if time_symbol in op.free_symbols:
         op = op.expand()
         if isinstance(op, OperatorPlus):
             result = []
             for o in op.operands:
-                if time_symbol not in o.all_symbols():
+                if time_symbol not in o.free_symbols:
                     if len(result) == 0:
                         result.append(convert_to_qutip(o,
                                                        full_space=full_space))
                     else:
                         result[0] += convert_to_qutip(o, full_space=full_space)
             for o in op.operands:
-                if time_symbol in o.all_symbols():
+                if time_symbol in o.free_symbols:
                     result.append(_time_dependent_to_qutip(o, full_space,
                                   time_symbol, convert_as))
             return result
-        elif isinstance(op, ScalarTimesOperator):
+        elif (
+                isinstance(op, ScalarTimesOperator) and
+                isinstance(op.coeff, ScalarValue)):
             if convert_as == 'pyfunc':
-                func_no_args = lambdify(time_symbol, op.coeff)
+                func_no_args = lambdify(time_symbol, op.coeff.val)
                 if {time_symbol, } == op.coeff.free_symbols:
                     def func(t, args):
                         # args are ignored for increased efficiency, since we
@@ -447,7 +451,7 @@ def _time_dependent_to_qutip(
                 # TODO: we can probably use one of the sympy code generation
                 # routines, or lambdify with 'numexpr' to implement this in a
                 # more robust way
-                coeff = re.sub("I", "(1.0j)", str(op.coeff))
+                coeff = re.sub("I", "(1.0j)", str(op.coeff.val))
             else:
                 raise ValueError(("Invalid value '%s' for `convert_as`, must "
                                   "be one of 'str', 'pyfunc'") % convert_as)

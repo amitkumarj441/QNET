@@ -14,7 +14,7 @@ def get_leaf_modules(package_path):
         for f in files:
             if f.endswith(".py") and not f == "__init__.py":
                 full_file = os.path.relpath(os.path.join(path, f), start=root)
-                module = full_file.replace("/", ".")[:-3]
+                module = full_file.replace(os.sep, ".")[:-3]
                 res.append(module)
     return res
 
@@ -36,7 +36,7 @@ def _get_members(obj):
 def test_get_leaf_modules(request):
     """Test that get_leaf_modules produces expected results"""
     filename = request.module.__file__
-    qnet_dir = os.path.join(os.path.split(filename)[0], '../src/qnet')
+    qnet_dir = os.path.join(os.path.split(filename)[0], '..', 'src', 'qnet')
     modules = get_leaf_modules(qnet_dir)
     assert "qnet.algebra.core.abstract_algebra" in modules
 
@@ -44,7 +44,7 @@ def test_get_leaf_modules(request):
 def test_flat_api(request):
     """Check the promises made by the "flat" API"""
     filename = request.module.__file__
-    pkg_dir = os.path.join(os.path.split(filename)[0], '../src/qnet')
+    pkg_dir = os.path.join(os.path.split(filename)[0], '..', 'src', 'qnet')
     modules = get_leaf_modules(pkg_dir)
     # TODO: what about packages that define members?
 

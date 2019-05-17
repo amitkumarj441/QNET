@@ -15,13 +15,17 @@ from sympy.printing.precedence import (
 # treated like they were inherited, so not every single class has to be named
 # here.
 PRECEDENCE_VALUES = {
+    "QuantumPlus": PRECEDENCE["Add"],
+    "QuantumTimes": PRECEDENCE["Mul"],
+    "ScalarTimesQuantumExpression": PRECEDENCE["Mul"],
+    "QuantumAdjoint": PRECEDENCE["Pow"],
+    "QuantumDerivative": PRECEDENCE["Mul"] - 1,
     "OperatorPlus": PRECEDENCE["Add"],
     "OperatorTimes": PRECEDENCE["Mul"],
     "ScalarTimesOperator": PRECEDENCE["Mul"],
-    "Commutator": PRECEDENCE["Add"],
+    "Commutator": PRECEDENCE["Mul"],
     "SingleOperatorOperation": PRECEDENCE["Atom"],
     "OperatorPlusMinusCC": PRECEDENCE["Add"] - 1,
-    "OperatorCommutator": PRECEDENCE["Atom"],
     "SeriesProduct": PRECEDENCE["Mul"],
     "Concatenation": PRECEDENCE["Add"],
     "SeriesInverse": PRECEDENCE["Atom"],
@@ -34,6 +38,10 @@ PRECEDENCE_VALUES = {
     "SuperOperatorPlus": PRECEDENCE["Add"],
     "SuperOperatorTimes": PRECEDENCE["Mul"],
     "SuperAdjoint": PRECEDENCE["Pow"],
+    "ScalarPlus": PRECEDENCE["Add"],
+    "ScalarTimes": PRECEDENCE["Mul"],
+    "ScalarPower": PRECEDENCE["Pow"],
+    "PseudoInverse": PRECEDENCE["Atom"] + 1,
 }
 PRECEDENCE_VALUES.update(SYMPY_PRECEDENCE_VALUES)
 
@@ -69,6 +77,10 @@ def precedence_SuperOperatorTimesOperator(expr):
     return PRECEDENCE["Mul"]
 
 
+def precedence_ScalarValue(expr):
+    return precedence(expr.val)
+
+
 PRECEDENCE_FUNCTIONS = {
     "ScalarTimesOperator": precedence_ScalarTimesX,
     "ScalarTimesKet": precedence_ScalarTimesX,
@@ -76,6 +88,7 @@ PRECEDENCE_FUNCTIONS = {
     "Bra": precedence_Bra,
     "ScalarTimesSuperOperator": precedence_ScalarTimesX,
     "SuperOperatorTimesOperator": precedence_SuperOperatorTimesOperator,
+    "ScalarValue": precedence_ScalarValue,
 }
 PRECEDENCE_FUNCTIONS.update(SYMPY_PRECEDENCE_FUNCTIONS)
 

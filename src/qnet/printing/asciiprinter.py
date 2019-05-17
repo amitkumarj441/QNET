@@ -1,5 +1,6 @@
 """ASCII Printer"""
 from ..utils.singleton import Singleton
+from ..algebra.core.exceptions import BasisNotSetError
 from .base import QnetBasePrinter
 from .sympy import SympyStrPrinter
 from ._precedence import precedence, PRECEDENCE
@@ -30,6 +31,8 @@ class QnetAsciiPrinter(QnetBasePrinter):
 
     _parenth_left = '('
     _parenth_right = ')'
+    _bracket_left = '['
+    _bracket_right = ']'
     _dagger_sym = 'H'
     _tensor_sym = '*'
     _product_sym = '*'
@@ -55,7 +58,7 @@ class QnetAsciiPrinter(QnetBasePrinter):
         strings"""
         try:
             name, subscript = identifier.split("_", 1)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, AttributeError):
             name = identifier
             subscript = ''
         return self._render_str(name), self._render_str(subscript)
@@ -66,9 +69,9 @@ class QnetAsciiPrinter(QnetBasePrinter):
         `arguments` str. All of the returned strings are fully rendered.
 
         Args:
-            identifier (str): An (non-rendered/ascii) identifier that may
-                include a subscript. The output `name` will be the `identifier`
-                without any subscript
+            identifier (str or SymbolicLabelBase): A (non-rendered/ascii)
+                identifier that may include a subscript. The output `name` will
+                be the `identifier` without any subscript
             hs_label (str): The rendered label for the Hilbert space of the
                 operator, or None. Returned unchanged.
             dagger (bool): Flag to indicate whether the operator is daggered.
@@ -80,6 +83,9 @@ class QnetAsciiPrinter(QnetBasePrinter):
                 with :attr:`_parenth_left` and :attr:`parenth_right`, and
                 returnd as the `arguments` string
         """
+        if self._isinstance(identifier, 'SymbolicLabelBase'):
+            identifier = QnetAsciiDefaultPrinter()._print_SCALAR_TYPES(
+                identifier.expr)
         name, total_subscript = self._split_identifier(identifier)
         total_superscript = ''
         if (hs_label not in [None, '']):
@@ -98,6 +104,10 @@ class QnetAsciiPrinter(QnetBasePrinter):
                         ",".join([self.doprint(arg) for arg in args]) +
                         self._parenth_right)
         return name, total_subscript, total_superscript, args_str
+
+    @classmethod
+    def _is_single_letter(cls, label):
+        return len(label) == 1
 
     def _render_hs_label(self, hs):
         """Return the label of the given Hilbert space as a string"""
@@ -144,8 +154,8 @@ class QnetAsciiPrinter(QnetBasePrinter):
         """Render an operator
 
         Args:
-            identifier (str): The identifier (name/symbol) of the operator. May
-                include a subscript, denoted by '_'.
+            identifier (str or SymbolicLabelBase): The identifier (name/symbol)
+                of the operator. May include a subscript, denoted by '_'.
             hs (qnet.algebra.hilbert_space_algebra.HilbertSpace): The Hilbert
                 space in which the operator is defined
             dagger (bool): Whether the operator should be daggered
@@ -174,7 +184,7 @@ class QnetAsciiPrinter(QnetBasePrinter):
         `doit` renderer"""
         needs_parenths = (
             (precedence(expr) < level) or
-            ((not strict) and precedence(expr) <= level))
+            (strict and precedence(expr) == level))
         if needs_parenths:
             return (
                 self._parenth_left + self.doprint(expr, *args, **kwargs) +
@@ -182,8 +192,24 @@ class QnetAsciiPrinter(QnetBasePrinter):
         else:
             return self.doprint(expr, *args, **kwargs)
 
+    def _print_tuple(self, expr):
+        return (
+            self._parenth_left + ", ".join([self.doprint(c) for c in expr])
+            + self._parenth_right)
+
+    def _print_list(self, expr):
+        return (
+            self._bracket_left + ", ".join([self.doprint(c) for c in expr])
+            + self._bracket_right)
+
     def _print_CircuitSymbol(self, expr):
-        return self._render_str(expr.name)
+        res = self._render_str(expr.label)
+        if len(expr.sym_args) > 0:
+            res += (
+                self._parenth_left +
+                ", ".join([self.doprint(arg) for arg in expr.sym_args]) +
+                self._parenth_right)
+        return res
 
     def _print_CPermutation(self, expr):
         return r'Perm(%s)' % (
@@ -233,18 +259,6 @@ class QnetAsciiPrinter(QnetBasePrinter):
         return r'[{operand}]^{{-1}}'.format(
             operand=self.doprint(expr.operand))
 
-    def _print_Component(self, expr):
-        name = self._render_str(expr.name)
-        res = name
-        params = []
-        if len(expr._parameters) > 0:
-            for param in expr._parameters:
-                val = getattr(expr, param)
-                params.append("%s=%s" % (param, self.doprint(val)))
-            res += (
-                self._parenth_left + ", ".join(params) + self._parenth_right)
-        return res
-
     def _print_HilbertSpace(self, expr):
         return r'H_{label}'.format(
             label=self._render_hs_label(expr))
@@ -255,7 +269,13 @@ class QnetAsciiPrinter(QnetBasePrinter):
             [self.doprint(op) for op in expr.operands])
 
     def _print_OperatorSymbol(self, expr, adjoint=False):
-        return self._render_op(expr.label, expr._hs, dagger=adjoint)
+        res = self._render_op(expr.label, expr._hs, dagger=adjoint)
+        if len(expr.sym_args) > 0:
+            res += (
+                self._parenth_left +
+                ", ".join([self.doprint(arg) for arg in expr.sym_args]) +
+                self._parenth_right)
+        return res
 
     def _print_LocalOperator(self, expr, adjoint=False):
         if adjoint:
@@ -279,18 +299,14 @@ class QnetAsciiPrinter(QnetBasePrinter):
                     label_j=self._render_state_label(expr.k),
                     space=self._render_hs_label(expr.space))
         else:
-            if adjoint:
-                identifier = "%s_%s,%s" % (expr.identifier, expr.k, expr.j)
+            if expr.j == expr.k:
+                identifier = "%s_%s" % (expr._identifier_projector, expr.j)
             else:
-                identifier = "%s_%s,%s" % (expr.identifier, expr.j, expr.k)
+                if adjoint:
+                    identifier = "%s_%s,%s" % (expr.identifier, expr.k, expr.j)
+                else:
+                    identifier = "%s_%s,%s" % (expr.identifier, expr.j, expr.k)
             return self._render_op(identifier, expr._hs, dagger=adjoint)
-
-    def _print_LocalProjector(self, expr, adjoint=False):
-        if self._settings['sig_as_ketbra']:
-            return self._print_LocalSigma(expr, adjoint=False)
-        else:
-            identifier = "%s_%s" % (expr.identifier, expr.j)
-            return self._render_op(identifier, expr._hs, dagger=False)
 
     def _print_IdentityOperator(self, expr):
         return "1"
@@ -298,37 +314,14 @@ class QnetAsciiPrinter(QnetBasePrinter):
     def _print_ZeroOperator(self, expr):
         return "0"
 
-    def _print_OperatorPlus(self, expr, adjoint=False, superop=False):
-        prec = precedence(expr)
-        l = []
-        kwargs = {}
-        if adjoint:
-            kwargs['adjoint'] = adjoint
-        if superop:
-            kwargs['superop'] = superop
-        for term in expr.args:
-            t = self.doprint(term, **kwargs)
-            if t.startswith('-'):
-                sign = "-"
-                t = t[1:].strip()
-            else:
-                sign = "+"
-            if precedence(term) < prec:
-                l.extend([sign, self._parenth_left + t + self._parenth_right])
-            else:
-                l.extend([sign, t])
-        try:
-            sign = l.pop(0)
-            if sign == '+':
-                sign = ""
-        except IndexError:
-            sign = ""
-        return sign + ' '.join(l)
+    def _print_ScalarValue(self, expr, **kwargs):
+        return self.doprint(expr.val, **kwargs)
 
-    def _print_OperatorTimes(self, expr, **kwargs):
-        prec = precedence(expr)
-        return self._spaced_product_sym.join(
-            [self.parenthesize(op, prec, **kwargs) for op in expr.operands])
+    def _print_Zero(self, expr, **kwargs):
+        return "0"
+
+    def _print_One(self, expr, **kwargs):
+        return "1"
 
     def _print_ScalarTimesQuantumExpression(self, expr, **kwargs):
         prec = PRECEDENCE['Mul']
@@ -359,8 +352,43 @@ class QnetAsciiPrinter(QnetBasePrinter):
                     self._parenth_left + coeff_str + self._parenth_right)
             return coeff_str + self._spaced_product_sym + term_str.strip()
 
-    def _print_Commutator(self, expr):
-        return "[" + self.doprint(expr.A) + ", " + self.doprint(expr.B) + "]"
+    def _print_QuantumPlus(self, expr, adjoint=False, superop=False):
+        prec = precedence(expr)
+        l = []
+        kwargs = {}
+        if adjoint:
+            kwargs['adjoint'] = adjoint
+        if superop:
+            kwargs['superop'] = superop
+        for term in expr.args:
+            t = self.doprint(term, **kwargs)
+            if t.startswith('-'):
+                sign = "-"
+                t = t[1:].strip()
+            else:
+                sign = "+"
+            if precedence(term) < prec:
+                l.extend([sign, self._parenth_left + t + self._parenth_right])
+            else:
+                l.extend([sign, t])
+        try:
+            sign = l.pop(0)
+            if sign == '+':
+                sign = ""
+        except IndexError:
+            sign = ""
+        return sign + ' '.join(l)
+
+    def _print_QuantumTimes(self, expr, **kwargs):
+        prec = precedence(expr)
+        return self._spaced_product_sym.join(
+            [self.parenthesize(op, prec, **kwargs) for op in expr.operands])
+
+    def _print_Commutator(self, expr, adjoint=False):
+        res = "[" + self.doprint(expr.A) + ", " + self.doprint(expr.B) + "]"
+        if adjoint:
+            res += "^" + self._dagger_sym
+        return res
 
     def _print_OperatorTrace(self, expr, adjoint=False):
         s = self._render_hs_label(expr._over_space)
@@ -412,9 +440,14 @@ class QnetAsciiPrinter(QnetBasePrinter):
             fmt = self._braket_fmt('bra')
         else:
             fmt = self._braket_fmt('ket')
+        label = self._render_state_label(expr.label)
+        if len(expr.sym_args) > 0:
+            label += (
+                self._parenth_left +
+                ", ".join([self.doprint(arg) for arg in expr.sym_args]) +
+                self._parenth_right)
         return fmt.format(
-            label=self._render_state_label(expr.label),
-            space=self._render_hs_label(expr.space))
+            label=label, space=self._render_hs_label(expr.space))
 
     def _print_ZeroKet(self, expr, adjoint=False):
         return "0"
@@ -431,14 +464,20 @@ class QnetAsciiPrinter(QnetBasePrinter):
         space = self._render_hs_label(expr.space)
         return fmt.format(label=label, space=space)
 
-    def _print_KetPlus(self, expr, adjoint=False):
-        # this behaves exactly like Operators
-        return self._print_OperatorPlus(expr, adjoint=adjoint)
-
     def _print_TensorKet(self, expr, adjoint=False):
         if all(self._isinstance(o, 'BasisKet') for o in expr.operands):
-            label = ",".join([
-                self._render_state_label(o.label) for o in expr.operands])
+            labels = [self._render_state_label(o.label) for o in expr.operands]
+            single_letters = all([self._is_single_letter(l) for l in labels])
+            try:
+                small_hs = all(
+                    [(o.space.dimension < 10) for o in expr.operands])
+            except BasisNotSetError:
+                small_hs = False
+            if small_hs and single_letters:
+                joiner = ""
+            else:
+                joiner = ","
+            label = joiner.join(labels)
             fmt = self._braket_fmt('ket')
             if adjoint:
                 fmt = self._braket_fmt('bra')
@@ -580,10 +619,22 @@ class QnetAsciiPrinter(QnetBasePrinter):
         trivial = True
         try:
             bra_label = self._render_state_label(expr.bra.label)
+            bra = expr.bra.ket
+            if hasattr(bra, 'sym_args') and len(bra.sym_args) > 0:
+                bra_label += (
+                    self._parenth_left +
+                    ", ".join([self.doprint(arg) for arg in bra.sym_args]) +
+                    self._parenth_right)
         except AttributeError:
             trivial = False
         try:
             ket_label = self._render_state_label(expr.ket.label)
+            if hasattr(expr.ket, 'sym_args') and len(expr.ket.sym_args) > 0:
+                ket_label += (
+                    self._parenth_left +
+                    ", ".join(
+                        [self.doprint(arg) for arg in expr.ket.sym_args]) +
+                    self._parenth_right)
         except AttributeError:
             trivial = False
         if trivial:
@@ -609,10 +660,22 @@ class QnetAsciiPrinter(QnetBasePrinter):
         trivial = True
         try:
             bra_label = self._render_state_label(expr.bra.label)
+            bra = expr.bra.ket
+            if hasattr(bra, 'sym_args') and len(bra.sym_args) > 0:
+                bra_label += (
+                    self._parenth_left +
+                    ", ".join([self.doprint(arg) for arg in bra.sym_args]) +
+                    self._parenth_right)
         except AttributeError:
             trivial = False
         try:
             ket_label = self._render_state_label(expr.ket.label)
+            if hasattr(expr.ket, 'sym_args') and len(expr.ket.sym_args) > 0:
+                ket_label += (
+                    self._parenth_left +
+                    ", ".join(
+                        [self.doprint(arg) for arg in expr.ket.sym_args]) +
+                    self._parenth_right)
         except AttributeError:
             trivial = False
         if trivial:
@@ -635,8 +698,14 @@ class QnetAsciiPrinter(QnetBasePrinter):
                 return rendered_ket + rendered_bra
 
     def _print_SuperOperatorSymbol(self, expr, adjoint=False, superop=True):
-        return self._render_op(
+        res = self._render_op(
             expr.label, expr._hs, dagger=adjoint, superop=True)
+        if len(expr.sym_args) > 0:
+            res += (
+                self._parenth_left +
+                ", ".join([self.doprint(arg) for arg in expr.sym_args]) +
+                self._parenth_right)
+        return res
 
     def _print_IdentitySuperOperator(self, expr, superop=True):
         return "1"
@@ -645,13 +714,13 @@ class QnetAsciiPrinter(QnetBasePrinter):
         return "0"
 
     def _print_SuperOperatorPlus(self, expr, adjoint=False, superop=True):
-        return self._print_OperatorPlus(expr, adjoint=adjoint, superop=True)
+        return self._print_QuantumPlus(expr, adjoint=adjoint, superop=True)
 
     def _print_SuperOperatorTimes(self, expr, adjoint=False, superop=True):
         kwargs = {}
         if adjoint:
             kwargs['adjoint'] = True
-        return self._print_OperatorTimes(expr, superop=True, **kwargs)
+        return self._print_QuantumTimes(expr, superop=True, **kwargs)
 
     def _print_SuperAdjoint(self, expr, adjoint=False, superop=True):
         o = expr.operand
@@ -683,6 +752,25 @@ class QnetAsciiPrinter(QnetBasePrinter):
         ct = self.doprint(op)
         return "%s[%s]" % (cs, ct)
 
+    def _print_QuantumDerivative(self, expr):
+        res = ""
+        for sym, n in expr.derivs.items():
+            sym_str = self.doprint(sym)
+            if " " in sym_str:
+                sym_str = "(%s)" % sym_str
+            if n == 1:
+                res += "D_%s " % sym_str
+            else:
+                res += "D_%s^%s " % (sym_str, n)
+        res += self.parenthesize(expr.operand, PRECEDENCE['Mul'], strict=True)
+        if expr.vals:
+            evaluation_strs = []
+            for sym, val in expr.vals.items():
+                evaluation_strs.append(
+                    "%s=%s" % (self.doprint(sym), self.doprint(val)))
+            res += " |_(%s)" % ", ".join(evaluation_strs)
+        return res
+
     def _print_Matrix(self, expr):
         matrix_left_sym = '['
         matrix_right_sym = ']'
@@ -704,6 +792,15 @@ class QnetAsciiPrinter(QnetBasePrinter):
         return (
             matrix_left_sym + matrix_row_sep_sym.join(row_strs) +
             matrix_right_sym)
+
+    def _print_Eq(self, expr):
+        # print for qnet.algebra.toolbox.equality.Eq, but also works for any
+        # Eq class that has the minimum requirement to have an `lhs` and `rhs`
+        # attribute
+        try:
+            return expr._render_str(renderer=self.doprint)
+        except AttributeError:
+            return (self.doprint(expr.lhs) + ' = ' + self.doprint(expr.rhs))
 
 
 class QnetAsciiDefaultPrinter(QnetAsciiPrinter):

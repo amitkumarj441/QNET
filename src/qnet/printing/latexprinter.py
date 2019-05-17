@@ -8,8 +8,9 @@ from sympy.printing.conventions import split_super_sub
 from numpy import complex128
 
 from ..utils.singleton import Singleton
+from ..utils.indices import StrLabel
 from .asciiprinter import QnetAsciiPrinter
-from ._precedence import precedence
+from ._precedence import precedence, PRECEDENCE
 from .sympy import SympyLatexPrinter
 
 __all__ = []
@@ -17,11 +18,14 @@ __private__ = ['QnetLatexPrinter', 'render_latex_sub_super']
 
 
 class QnetLatexPrinter(QnetAsciiPrinter):
-    """Printer for a LaTeX representation."""
+    """Printer for a LaTeX representation.
+
+    See :func:`qnet.printing.latex` for documentation of `settings`.
+    """
     sympy_printer_cls = SympyLatexPrinter
     printmethod = '_latex'
 
-    _default_settings = {
+    _default_settings = {  # documented in :func:`latex`
         'show_hs_label': True,  # alternatively: False, 'subscript'
         'sig_as_ketbra': True,
         'tex_op_macro': r'\hat{{{name}}}',
@@ -30,10 +34,13 @@ class QnetLatexPrinter(QnetAsciiPrinter):
         'tex_textsop_macro': r'\mathrm{{{name}}}',
         'tex_identity_sym': r'\mathbb{1}',
         'tex_use_braket': False,  # use the braket package?
+        'tex_frac_for_spin_labels': False,
     }
 
     _parenth_left = r'\left('
     _parenth_right = r'\right)'
+    _bracket_left = r'\left['
+    _bracket_right = r'\right]'
     _dagger_sym = r'\dagger'
     _tensor_sym = r'\otimes'
     _product_sym = ' '
@@ -60,8 +67,14 @@ class QnetLatexPrinter(QnetAsciiPrinter):
             res = res.replace('j', 'i')
         return res
 
+    @classmethod
+    def _is_single_letter(cls, label):
+        return (len(label) == 1 or label in _TEX_SINGLE_LETTER_SYMBOLS)
+
     def _render_str(self, string):
         """Returned a texified version of the string"""
+        if isinstance(string, StrLabel):
+            string = string._render(string.expr)
         string = str(string)
         if len(string) == 0:
             return ''
@@ -162,7 +175,7 @@ class QnetLatexPrinter(QnetAsciiPrinter):
             = self._split_op(identifier, hs_label, dagger, args)
         if name.startswith(r'\text{'):
             name = name[6:-1]
-        if len(name) == 1 or name in _TEX_SINGLE_LETTER_SYMBOLS:
+        if self._is_single_letter(name):
             if superop:
                 name_fmt = self._settings['tex_sop_macro']
             else:
@@ -179,10 +192,27 @@ class QnetLatexPrinter(QnetAsciiPrinter):
         res += args_str
         return res
 
-    def _print_Commutator(self, expr):
-        return (
+    def _render_state_label(self, label):
+        if self._isinstance(label, 'SymbolicLabelBase'):
+            return self._print_SCALAR_TYPES(label.expr)
+        else:
+            label = self._render_str(label)
+            if "/" in label and self._settings['tex_frac_for_spin_labels']:
+                numer, denom = label.split("/", 1)
+                sign = '+'
+                if numer.startswith('-') or numer.startswith('+'):
+                    sign, numer = numer[0], numer[1:]
+                return r'%s\frac{%s}{%s}' % (sign, numer, denom)
+            else:
+                return label
+
+    def _print_Commutator(self, expr, adjoint=False):
+        res = (
             r'\left[' + self.doprint(expr.A) + ", " + self.doprint(expr.B) +
             r'\right]')
+        if adjoint:
+            res += "^{%s}" % self._dagger_sym
+        return res
 
     def _print_OperatorTrace(self, expr, adjoint=False):
         s = self._render_hs_label(expr._over_space)
@@ -202,6 +232,24 @@ class QnetLatexPrinter(QnetAsciiPrinter):
     def _print_SeriesInverse(self, expr):
         return r'\left[%s\right]^{\rhd}' % self.doprint(expr.operand)
 
+    def _print_CircuitSymbol(self, expr):
+        res = self._render_str(expr.label)
+        if len(expr.sym_args) > 0:
+            res += (
+                self._parenth_left +
+                ", ".join([self.doprint(arg) for arg in expr.sym_args]) +
+                self._parenth_right)
+        return res
+
+    def _print_Component(self, expr):
+        res = r'{\rm %s}' % self._render_str(expr.label)
+        if len(expr.sym_args) > 0:
+            res += (
+                self._parenth_left +
+                ", ".join([self.doprint(arg) for arg in expr.sym_args]) +
+                self._parenth_right)
+        return res
+
     def _print_CPermutation(self, expr):
         permutation_sym = r'\mathbf{P}_{\sigma}'
         return r'%s\begin{pmatrix} %s \\ %s \end{pmatrix}' % (
@@ -214,18 +262,6 @@ class QnetLatexPrinter(QnetAsciiPrinter):
 
     def _print_CircuitZero(self, expr):
         return r'{\rm cid}(0)'
-
-    def _print_Component(self, expr):
-        name = r'\text{%s}' % expr.name
-        res = name
-        params = []
-        if len(expr._parameters) > 0:
-            for param in expr._parameters:
-                val = getattr(expr, param)
-                params.append(self.doprint(val))
-            res += (
-                self._parenth_left + ", ".join(params) + self._parenth_right)
-        return res
 
     def _print_HilbertSpace(self, expr):
         return r'\mathcal{{H}}_{{{label}}}'.format(
@@ -262,6 +298,33 @@ class QnetLatexPrinter(QnetAsciiPrinter):
         ct = self.doprint(op)
         return r'%s\left[%s\right]' % (cs, ct)
 
+    def _print_QuantumDerivative(self, expr):
+        res = ""
+        numerator = r'\partial'
+        if expr.n > 1:
+            numerator = r'\partial^{%s}' % expr.n
+        denominators = []
+        for sym, n in expr.derivs.items():
+            if n == 1:
+                denominators.append(
+                    r'\partial %s' % self.doprint(sym))
+            else:
+                denominators.append(
+                    r'\partial %s^{%s}' % (self.doprint(sym), n))
+        denominator = " ".join(denominators)
+        res += r'\frac{%s}{%s}' % (numerator, denominator)
+        res += " " + self.parenthesize(
+            expr.operand, PRECEDENCE['Mul'], strict=True)
+        if expr.vals:
+            res = r'\left. ' + res
+            evaluation_strs = []
+            for sym, val in expr.vals.items():
+                evaluation_strs.append(
+                    "%s=%s" % (self.doprint(sym), self.doprint(val)))
+            evaluation_str = ", ".join(evaluation_strs)
+            res += r' \right\vert_{%s}' % evaluation_str
+        return res
+
     def _print_Matrix(self, expr):
         matrix_left_sym = r'\begin{pmatrix}'
         matrix_right_sym = r'\end{pmatrix}'
@@ -284,6 +347,52 @@ class QnetLatexPrinter(QnetAsciiPrinter):
             matrix_left_sym + matrix_row_sep_sym.join(row_strs) +
             matrix_right_sym)
 
+    def _print_Eq(self, expr):
+        # print for qnet.algebra.toolbox.equality.Eq, but also works for any
+        # Eq class that has the minimum requirement to have an `lhs` and `rhs`
+        # attribute
+        try:
+            has_history = len(expr._prev_rhs) > 0
+        except AttributeError:
+            has_history = False
+        if has_history:
+            res = r'\begin{align}' + "\n"
+            res += "  %s &= %s" % (
+                self.doprint(expr._prev_lhs[0]),
+                self.doprint(expr._prev_rhs[0]))
+            if expr._prev_tags[0] is not None:
+                res += r'\tag{%s}' % expr._prev_tags[0]
+            res += "\\\\\n"
+            for i, rhs in enumerate(expr._prev_rhs[1:]):
+                lhs = expr._prev_lhs[i+1]
+                if lhs is None:
+                    res += "   &= %s" % self.doprint(rhs)
+                else:
+                    res += "  %s &= %s" % (self.doprint(lhs), self.doprint(rhs))
+                if expr._prev_tags[i+1] is not None:
+                    res += r'\tag{%s}' % expr._prev_tags[i+1]
+                res += "\\\\\n"
+            lhs = expr._lhs
+            if lhs is None:
+                res += "   &= %s\n" % self.doprint(expr.rhs)
+            else:
+                res += "  %s &= %s\n" % (
+                    self.doprint(lhs), self.doprint(expr.rhs))
+            if expr.tag is not None:
+                res += r'\tag{%s}' % expr.tag
+            res += r'\end{align}' + "\n"
+        else:
+            res = r'\begin{equation}' + "\n"
+            res += "  %s = %s\n" % (
+                self.doprint(expr.lhs), self.doprint(expr.rhs))
+            try:
+                if expr.tag is not None:
+                    res += r'\tag{%s}' % expr.tag
+            except AttributeError:
+                pass
+            res += r'\end{equation}' + "\n"
+        return res
+
 
 _TEX_GREEK_DICTIONARY = {
     'Alpha': 'A', 'Beta': 'B', 'Gamma': r'\Gamma', 'Delta': r'\Delta',
@@ -296,7 +405,8 @@ _TEX_GREEK_DICTIONARY = {
     'lamda': r'\lambda', 'Lamda': r'\Lambda', 'khi': r'\chi',
     'Khi': r'X', 'varepsilon': r'\varepsilon', 'varkappa': r'\varkappa',
     'varphi': r'\varphi', 'varpi': r'\varpi', 'varrho': r'\varrho',
-    'varsigma': r'\varsigma', 'vartheta': r'\vartheta',
+    'varsigma': r'\varsigma', 'vartheta': r'\vartheta', 'up': r'\uparrow',
+    'down': r'\downarrow', 'uparrow': r'\uparrow', 'downarrow': r'\downarrow',
 }
 
 
@@ -306,7 +416,7 @@ _TEX_SINGLE_LETTER_SYMBOLS = [
     r'\delta', r'\epsilon', r'\eta', r'\gamma', r'\iota', r'\kappa',
     r'\lambda', r'\mu', r'\nu', r'\omega', r'\phi', r'\pi', r'\psi', r'\rho',
     r'\sigma', r'\tau', r'\theta', r'\upsilon', r'\varepsilon', r'\varphi',
-    r'\varrho', r'\vartheta', r'\xi', r'\zeta']
+    r'\varrho', r'\vartheta', r'\xi', r'\zeta', r'\uparrow', r'\downarrow']
 
 
 def _translate_symbols(string):

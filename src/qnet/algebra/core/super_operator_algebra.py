@@ -12,16 +12,17 @@ from sympy import (I, Matrix as SympyMatrix, sqrt)
 from .abstract_algebra import Operation
 from .abstract_quantum_algebra import (
     ScalarTimesQuantumExpression, QuantumExpression, QuantumSymbol,
-    QuantumOperation, QuantumPlus, QuantumTimes, QuantumAdjoint)
+    QuantumOperation, QuantumPlus, QuantumTimes, QuantumAdjoint,
+    QuantumDerivative)
 from .algebraic_properties import (
     assoc, filter_neutral, match_replace, match_replace_binary, orderby,
-    delegate_to_method)
+    delegate_to_method, collect_summands)
 from .exceptions import BadLiouvillianError, CannotSymbolicallyDiagonalize
 from .hilbert_space_algebra import TrivialSpace
 from .matrix_algebra import Matrix
 from .operator_algebra import (
-    Operator, OperatorPlus, ZeroOperator, sympyOne)
-from .scalar_types import SCALAR_TYPES
+    Operator, OperatorPlus, ZeroOperator, sympyOne, Adjoint, PseudoInverse)
+from .scalar_algebra import is_scalar, One
 from ...utils.ordering import DisjunctCommutativeHSOrder, KeyTuple
 from ...utils.singleton import Singleton, singleton_object
 
@@ -30,7 +31,7 @@ __all__ = [
     'SuperOperator', 'SuperOperatorPlus', 'SuperOperatorSymbol',
     'SuperOperatorTimes', 'SuperOperatorTimesOperator', 'anti_commutator',
     'commutator', 'lindblad', 'liouvillian', 'liouvillian_normal_form',
-    'IdentitySuperOperator', 'ZeroSuperOperator']
+    'IdentitySuperOperator', 'ZeroSuperOperator', 'SuperOperatorDerivative']
 
 __private__ = ['SuperCommutativeHSOrder']
 # anything not in __all__ must be in __private__
@@ -42,7 +43,7 @@ __private__ = ['SuperCommutativeHSOrder']
 
 
 class SuperOperator(QuantumExpression, metaclass=ABCMeta):
-    """The super-operator abstract base class."""
+    """Base class for super-operators"""
     def __mul__(self, other):
         if isinstance(other, Operator):
             return SuperOperatorTimesOperator.create(self, other)
@@ -56,13 +57,16 @@ class SuperOperator(QuantumExpression, metaclass=ABCMeta):
 
 
 class SuperOperatorSymbol(QuantumSymbol, SuperOperator):
-    """Symbolic super-operator"""
+    """Symbolic super-operator
+
+    See :class:`.QuantumSymbol`.
+    """
     pass
 
 
 @singleton_object
 class IdentitySuperOperator(SuperOperator, metaclass=Singleton):
-    """IdentitySuperOperator constant (singleton) object."""
+    """Neutral element for product of super-operators"""
 
     _order_index = 2
 
@@ -74,22 +78,19 @@ class IdentitySuperOperator(SuperOperator, metaclass=Singleton):
     def args(self):
         return tuple()
 
+    def _diff(self, sym):
+        return ZeroSuperOperator
+
     def _adjoint(self):
         return self
 
     def _expand(self):
         return self
-
-    def __eq__(self, other):
-        return self is other or other == 1
-
-    def all_symbols(self):
-        return set(())
 
 
 @singleton_object
 class ZeroSuperOperator(SuperOperator, metaclass=Singleton):
-    """ZeroSuperOperator constant (singleton) object."""
+    """Neutral element for sum of super-operators"""
 
     _order_index = 2
 
@@ -101,17 +102,14 @@ class ZeroSuperOperator(SuperOperator, metaclass=Singleton):
     def args(self):
         return tuple()
 
+    def _diff(self, sym):
+        return self
+
     def _adjoint(self):
         return self
 
     def _expand(self):
         return self
-
-    def __eq__(self, other):
-        return self is other or other == 0
-
-    def all_symbols(self):
-        return set(())
 
 
 ###############################################################################
@@ -120,11 +118,11 @@ class ZeroSuperOperator(SuperOperator, metaclass=Singleton):
 
 
 class SuperOperatorPlus(QuantumPlus, SuperOperator):
-    """A sum of super-operators."""
+    """A sum of super-operators"""
 
-    neutral_element = ZeroSuperOperator
+    _neutral_element = ZeroSuperOperator
     _binary_rules = OrderedDict()
-    _simplifications = [assoc, orderby, filter_neutral, match_replace_binary]
+    simplifications = [assoc, orderby, collect_summands, match_replace_binary]
 
 
 class SuperCommutativeHSOrder(DisjunctCommutativeHSOrder):
@@ -140,11 +138,11 @@ class SuperCommutativeHSOrder(DisjunctCommutativeHSOrder):
 
 
 class SuperOperatorTimes(QuantumTimes, SuperOperator):
-    """A product of super-operators that denotes order of application of
-    super-operators (right to left)"""
-    neutral_element = IdentitySuperOperator
+    """Product of super-operators"""
+
+    _neutral_element = IdentitySuperOperator
     _binary_rules = OrderedDict()  # see end of module
-    _simplifications = [assoc, orderby, filter_neutral, match_replace_binary]
+    simplifications = [assoc, orderby, filter_neutral, match_replace_binary]
 
     order_key = SuperCommutativeHSOrder
 
@@ -157,13 +155,14 @@ class SuperOperatorTimes(QuantumTimes, SuperOperator):
 
 
 class ScalarTimesSuperOperator(SuperOperator, ScalarTimesQuantumExpression):
-    """Multiply an operator by a scalar coefficient"""
+    """Product of a :class:`.Scalar` coefficient and a
+    :class:`SuperOperator`"""
 
     def _adjoint(self):
         pass
 
     _rules = OrderedDict()  # see end of module
-    _simplifications = [match_replace, ]
+    simplifications = [match_replace, ]
 
 #    def _pseudo_inverse(self):
 #        c, t = self.operands
@@ -171,9 +170,9 @@ class ScalarTimesSuperOperator(SuperOperator, ScalarTimesQuantumExpression):
 
 
 class SuperAdjoint(QuantumAdjoint, SuperOperator):
-    r"""The symbolic SuperAdjoint of a super-operator.
+    r"""Adjoint of a super-operator
 
-    The math notation for this is typically
+    The mathematical notation for this is typically
 
     .. math::
         {\rm SuperAdjoint}(\mathcal{L}) =: \mathcal{L}^*
@@ -186,20 +185,20 @@ class SuperAdjoint(QuantumAdjoint, SuperOperator):
 
     """
 
-    _simplifications = [delegate_to_method('_adjoint')]
+    simplifications = [delegate_to_method('_adjoint')]
 
     def __init__(self, operand):
         super().__init__(operand)
 
 
 class SPre(SuperOperator, Operation):
-    """Linear pre-multiplication operator.
+    """Linear pre-multiplication operator
 
     Acting ``SPre(A)`` on an operator ``B`` just yields the product ``A * B``
     """
 
     _rules = OrderedDict()  # see end of module
-    _simplifications = [match_replace, ]
+    simplifications = [match_replace, ]
 
     _order_name = 'A_SPre'  # "SPre" should go before "SPost"
 
@@ -213,15 +212,18 @@ class SPre(SuperOperator, Operation):
             return sum(SPre.create(oet) for oet in oe.operands)
         return SPre.create(oe)
 
-    def _simplify_scalar(self):
-        return self.create(self.operands[0].simplify_scalar())
+    def _simplify_scalar(self, func):
+        return self.create(self.operands[0].simplify_scalar(func=func))
+
+    def _diff(self, sym):
+        return SuperOperatorDerivative(self, {sym: 1})
 
     def _adjoint(self):
         return SPost(self.operands[0])
 
 
 class SPost(SuperOperator, Operation):
-    """Linear post-multiplication operator.
+    """Linear post-multiplication operator
 
         Acting ``SPost(A)`` on an operator ``B`` just yields the reversed
         product ``B * A``.
@@ -230,7 +232,7 @@ class SPost(SuperOperator, Operation):
     _order_index = -1
 
     _rules = OrderedDict()  # see end of module
-    _simplifications = [match_replace, ]
+    simplifications = [match_replace, ]
 
     _order_name = 'B_SPost'  # "SPost" should go before "SPre"
 
@@ -244,19 +246,24 @@ class SPost(SuperOperator, Operation):
             return sum(SPost.create(oet) for oet in oe.operands)
         return SPost.create(oe)
 
-    def _simplify_scalar(self):
-        return self.create(self.operands[0].simplify_scalar())
+    def _simplify_scalar(self, func):
+        return self.create(self.operands[0].simplify_scalar(func=func))
+
+    def _diff(self, sym):
+        return SuperOperatorDerivative(self, {sym: 1})
 
     def _adjoint(self):
         return SPre(self.operands[0])
 
 
 class SuperOperatorTimesOperator(Operator, Operation):
-    """Application of a super-operator to an operator (result is an Operator).
+    """Application of a super-operator to an operator
+
+    The result of this operation is(result is an :class:`Operator`
     """
 
     _rules = OrderedDict()  # see end of module
-    _simplifications = [match_replace, ]
+    simplifications = [match_replace, ]
 
     def __init__(self, sop, op):
         assert isinstance(sop, SuperOperator)
@@ -294,15 +301,26 @@ class SuperOperatorTimesOperator(Operator, Operation):
         ope = op.series_expand(param, about, order)
         return tuple(sop * opet for opet in ope)
 
-    def _simplify_scalar(self):
+    def _simplify_scalar(self, func):
         sop, op = self.sop, self.op
-        return sop.simplify_scalar() * op.simplify_scalar()
+        return sop.simplify_scalar(func=func) * op.simplify_scalar(func=func)
 
     def _adjoint(self):
-        return SuperAdjoint(self)
+        return Adjoint(self)
+
+    def _pseudo_inverse(self):
+        return PseudoInverse(self)
 
     def _diff(self, sym):
-        raise NotImplementedError()
+        return self.sop.diff(sym) * self.op + self.sop * self.op.diff(sym)
+
+
+class SuperOperatorDerivative(QuantumDerivative, SuperOperator):
+    """Symbolic partial derivative of a super-operator
+
+    See :class:`.QuantumDerivative`.
+    """
+    pass
 
 
 ###############################################################################
@@ -311,7 +329,9 @@ class SuperOperatorTimesOperator(Operator, Operation):
 
 
 def commutator(A, B=None):
-    """If ``B != None``, return the commutator :math:`[A,B]`, otherwise return
+    """Commutator of `A` and `B`
+
+    If ``B != None``, return the commutator :math:`[A,B]`, otherwise return
     the super-operator :math:`[A,\cdot]`.  The super-operator :math:`[A,\cdot]`
     maps any other operator ``B`` to the commutator :math:`[A, B] = A B - B A`.
 
@@ -348,7 +368,9 @@ def anti_commutator(A, B=None):
 
 
 def lindblad(C):
-    """Return ``SPre(C) * SPost(C.adjoint()) - (1/2) *
+    """Return the super-operator Lindblad term of the Lindblad operator `C`
+
+    Return ``SPre(C) * SPost(C.adjoint()) - (1/2) *
     santi_commutator(C.adjoint()*C)``.  These are the super-operators
     :math:`\mathcal{D}[C]` that form the collapse terms of a Master-Equation.
     Applied to an operator :math:`X` they yield
@@ -364,7 +386,7 @@ def lindblad(C):
         SuperOperator: The Lindblad collapse generator.
 
     """
-    if isinstance(C, SCALAR_TYPES):
+    if is_scalar(C):
         return ZeroSuperOperator
     return (
         SPre(C) * SPost(C.adjoint()) -
@@ -372,8 +394,7 @@ def lindblad(C):
 
 
 def liouvillian(H, Ls=None):
-    r"""Return the Liouvillian super-operator associated with a Hamilton
-    operator ``H`` and a set of collapse-operators ``Ls = [L1, L2, ...]``.
+    r"""Return the Liouvillian super-operator associated with `H` and `Ls`
 
     The Liouvillian :math:`\mathcal{L}` generates the Markovian-dynamics of a
     system via the Master equation:
@@ -384,7 +405,7 @@ def liouvillian(H, Ls=None):
 
     Args:
         H (Operator): The associated Hamilton operator
-        Ls (sequence or Matrix): A sequence of collapse operators.
+        Ls (sequence or Matrix): A sequence of Lindblad operators.
 
     Returns:
         SuperOperator: The Liouvillian super-operator.
@@ -465,7 +486,7 @@ def liouvillian_normal_form(L, symbolic = False):
             if isinstance(s, ScalarTimesSuperOperator):
                 coeff, term = s.operands
             else:
-                coeff, term = sympyOne, s
+                coeff, term = One, s
             if isinstance(term, SPre):
                 spres.append(coeff * term.operands[0])
             elif isinstance(term, SPost):
@@ -486,7 +507,7 @@ def liouvillian_normal_form(L, symbolic = False):
                     complex(coeff)
                 except (ValueError, TypeError):
                     symbolic = True
-                    coeff = coeff.simplify()
+                    coeff = coeff.simplify_scalar()
 
                 collapse_form[Li][Ljd] = coeff
 
@@ -538,7 +559,7 @@ def liouvillian_normal_form(L, symbolic = False):
                 diag = True
                 for i in range(len(basis)):
                     for j in range(i):
-                        if M[i,j].simplify() != 0 or M[j,i].simplify != 0:
+                        if M[i,j].apply_rules() != 0 or M[j, i].apply_rules != 0:
                             diag = False
                             break
                     if not diag:
@@ -610,4 +631,6 @@ SuperOperator._scalar_times_expr_cls = ScalarTimesSuperOperator
 SuperOperator._plus_cls = SuperOperatorPlus
 SuperOperator._times_cls = SuperOperatorTimes
 SuperOperator._adjoint_cls = SuperAdjoint
-SuperOperator._indexed_sum_cls = None
+SuperOperator._indexed_sum_cls = None  # TODO
+SuperOperator._indexed_sum_cls = None  # TODO
+SuperOperator._derivative_cls = SuperOperatorDerivative

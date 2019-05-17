@@ -1,9 +1,8 @@
 from sympy import Symbol, I
 
-from qnet.algebra.toolbox.core import extra_binary_rules
 from qnet.algebra.core.operator_algebra import (
-        Create, Destroy, LocalSigma, create_operator_pm_cc, OperatorPlus,
-        OperatorPlusMinusCC, expand_operator_pm_cc)
+    LocalSigma, rewrite_with_operator_pm_cc, OperatorPlusMinusCC)
+from qnet.algebra.library.fock_operators import Destroy, Create
 from qnet.algebra.core.hilbert_space_algebra import LocalSpace
 from qnet.printing import srepr
 
@@ -20,16 +19,15 @@ def test_simple_cc():
     sig_p = LocalSigma('e', 'g', hs=hs_q)
     sig_m = LocalSigma('g', 'e', hs=hs_q)
     coeff = (-I / 2) * (Omega_1 * g_1 / Delta_1)
-    jc_expr= coeff * (a * sig_p - a_dag * sig_m)
+    jc_expr = coeff * (a * sig_p - a_dag * sig_m)
 
-    with extra_binary_rules(OperatorPlus, create_operator_pm_cc()):
-        simplified = jc_expr.simplify()
+    simplified = rewrite_with_operator_pm_cc(jc_expr)
     assert simplified == coeff * OperatorPlusMinusCC(a * sig_p, sign=-1)
     assert (srepr(simplified.term) ==
             "OperatorPlusMinusCC(OperatorTimes(Destroy(hs=LocalSpace('c', "
             "dimension=3)), LocalSigma('e', 'g', hs=LocalSpace('q1', "
             "basis=('g', 'e')))), sign=-1)")
-    expanded = simplified.simplify(rules=expand_operator_pm_cc())
+    expanded = simplified.doit()
     assert expanded == jc_expr
 
 
@@ -44,9 +42,8 @@ def test_scalar_coeff_cc():
 
     jc_expr = I/2 * (2*kappa * (a1.dag() * a2) - 2*kappa * (a1 * a2.dag()))
 
-    with extra_binary_rules(OperatorPlus, create_operator_pm_cc()):
-        simplified = jc_expr.simplify()
-    assert (simplified ==
-            I * kappa * OperatorPlusMinusCC(a1.dag() * a2, sign=-1))
-    expanded = simplified.simplify(rules=expand_operator_pm_cc())
+    simplified = rewrite_with_operator_pm_cc(jc_expr)
+    assert (
+        simplified == I * kappa * OperatorPlusMinusCC(a1.dag() * a2, sign=-1))
+    expanded = simplified.doit()
     assert expanded == I * kappa * (a1.dag() * a2 - a1 * a2.dag())
